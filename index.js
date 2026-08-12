@@ -23,6 +23,12 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
+const VOICE_CHANCE_NORMAL = 0.15;
+const VOICE_CHANCE_DIRECT = 0.40;
+const VOICE_COOLDOWN_MS = 5 * 60 * 1000;
+
+const lastVoiceReplyAtByGuild = new Map();
+
 if (!TOKEN) {
   throw new Error("DISCORD_TOKEN environment variable is missing");
 }
@@ -231,46 +237,62 @@ client.on("interactionCreate", async (interaction) => {
               `FERGIE REPLY: ${fergieReply}`
             );
 
-            // KEEP THE TEXT RESPONSE
+            // TEXT ALWAYS STAYS
             await interaction.channel.send(
               `💬 **Fergie:** ${fergieReply}`
             );
 
             // =========================
-            // ELEVENLABS TTS + VC
+            // DECIDE IF SHE SPEAKS
             // =========================
-            try {
-              console.log(
-                "Generating Fergie voice..."
-              );
+            const voiceDecision = shouldFergieSpeak(
+              interaction.guild.id,
+              transcript
+            );
 
-              const speechFile =
-                await generateFergieSpeech(
-                  fergieReply,
-                  userId
+            console.log(
+              `VOICE DECISION: ${voiceDecision.reason}`
+            );
+
+            if (voiceDecision.speak) {
+              try {
+                console.log(
+                  "Generating Fergie voice..."
                 );
 
-              console.log(
-                `TTS CREATED: ${speechFile}`
-              );
+                const speechFile =
+                  await generateFergieSpeech(
+                    fergieReply,
+                    userId
+                  );
 
-              await playSpeechInVC(
-                connection,
-                speechFile
-              );
+                console.log(
+                  `TTS CREATED: ${speechFile}`
+                );
 
-              console.log(
-                "FERGIE VC PLAYBACK COMPLETE ✅"
-              );
-            } catch (error) {
-              console.error(
-                "Fergie TTS/playback error:",
-                error
-              );
+                await playSpeechInVC(
+                  connection,
+                  speechFile
+                );
 
-              await interaction.channel.send(
-                "❌ Fergie voice playback failed. Check Railway logs."
-              );
+                lastVoiceReplyAtByGuild.set(
+                  interaction.guild.id,
+                  Date.now()
+                );
+
+                console.log(
+                  "FERGIE VC PLAYBACK COMPLETE ✅"
+                );
+              } catch (error) {
+                console.error(
+                  "Fergie TTS/playback error:",
+                  error
+                );
+
+                await interaction.channel.send(
+                  "❌ Fergie voice playback failed. Check Railway logs."
+                );
+              }
             }
           } catch (error) {
             console.error(
@@ -502,6 +524,55 @@ Rules:
       .trim() || "";
 
   return reply;
+}
+
+// =========================
+// DECIDE WHETHER FERGIE SPEAKS
+// =========================
+function shouldFergieSpeak(guildId, transcript) {
+  const now = Date.now();
+
+  const lastSpokeAt =
+    lastVoiceReplyAtByGuild.get(guildId) || 0;
+
+  const elapsed =
+    now - lastSpokeAt;
+
+  if (elapsed < VOICE_COOLDOWN_MS) {
+    const secondsLeft = Math.ceil(
+      (VOICE_COOLDOWN_MS - elapsed) / 1000
+    );
+
+    return {
+      speak: false,
+      reason:
+        `cooldown active (${secondsLeft}s left)`,
+    };
+  }
+
+  const directlyAddressed =
+    /\bferg(?:ie|y)\b/i.test(transcript);
+
+  const chance =
+    directlyAddressed
+      ? VOICE_CHANCE_DIRECT
+      : VOICE_CHANCE_NORMAL;
+
+  const roll =
+    Math.random();
+
+  const speak =
+    roll < chance;
+
+  return {
+    speak,
+
+    reason:
+      `${directlyAddressed ? "direct" : "normal"} ` +
+      `roll=${roll.toFixed(3)} ` +
+      `chance=${chance.toFixed(2)} ` +
+      `=> ${speak ? "SPEAK" : "TEXT ONLY"}`,
+  };
 }
 
 // =========================
