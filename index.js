@@ -166,15 +166,12 @@ client.on("interactionCreate", async (interaction) => {
 
     opusStream
       .pipe(decoder)
-
       .on("data", (chunk) => {
         pcmChunks.push(Buffer.from(chunk));
       })
-
       .on("error", (error) => {
         console.error("Decoder error:", error);
       })
-
       .on("end", async () => {
         const pcm = Buffer.concat(pcmChunks);
 
@@ -196,7 +193,8 @@ client.on("interactionCreate", async (interaction) => {
           16
         );
 
-        const filename = `/tmp/vc_test_${userId}.wav`;
+        const filename =
+          `/tmp/vc_test_${userId}.wav`;
 
         fs.writeFileSync(filename, wav);
 
@@ -223,7 +221,9 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          console.log(`TRANSCRIPT: ${transcript}`);
+          console.log(
+            `TRANSCRIPT: ${transcript}`
+          );
 
           await interaction.channel.send(
             `📝 **Heard:** ${transcript}`
@@ -234,7 +234,9 @@ client.on("interactionCreate", async (interaction) => {
               await askGemini(transcript);
 
             if (!fergieReply) {
-              console.log("FERGIE REPLY: empty");
+              console.log(
+                "FERGIE REPLY: empty"
+              );
 
               await interaction.channel.send(
                 "💬 Fergie had nothing to say. Tragic."
@@ -251,10 +253,11 @@ client.on("interactionCreate", async (interaction) => {
               `💬 **Fergie:** ${fergieReply}`
             );
 
-            const voiceDecision = shouldFergieSpeak(
-              interaction.guild.id,
-              transcript
-            );
+            const voiceDecision =
+              shouldFergieSpeak(
+                interaction.guild.id,
+                transcript
+              );
 
             console.log(
               `VOICE DECISION: ${voiceDecision.reason}`
@@ -329,9 +332,10 @@ client.on("interactionCreate", async (interaction) => {
   // /leavetest
   // =========================
   if (interaction.commandName === "leavetest") {
-    const connection = getVoiceConnection(
-      interaction.guild.id
-    );
+    const connection =
+      getVoiceConnection(
+        interaction.guild.id
+      );
 
     if (connection) {
       connection.destroy();
@@ -418,7 +422,6 @@ function startAutoListening(
             end: {
               behavior:
                 EndBehaviorType.AfterSilence,
-
               duration: 1200,
             },
           }
@@ -463,7 +466,9 @@ function startAutoListening(
             activeUsers.delete(userId);
 
             const pcm =
-              Buffer.concat(pcmChunks);
+              Buffer.concat(
+                pcmChunks
+              );
 
             console.log(
               `AUTO PCM COMPLETE ${member.user.tag}: ` +
@@ -510,7 +515,9 @@ function startAutoListening(
                 `AUTO RESPONSE DECISION: ${responseDecision.reason}`
               );
 
-              if (!responseDecision.respond) {
+              if (
+                !responseDecision.respond
+              ) {
                 return;
               }
 
@@ -557,7 +564,9 @@ function startAutoListening(
                 `AUTO VOICE DECISION: ${voiceDecision.reason}`
               );
 
-              if (!voiceDecision.speak) {
+              if (
+                !voiceDecision.speak
+              ) {
                 return;
               }
 
@@ -613,7 +622,8 @@ function createWavBuffer(
   bitsPerSample
 ) {
   const blockAlign =
-    channels * (bitsPerSample / 8);
+    channels *
+    (bitsPerSample / 8);
 
   const byteRate =
     sampleRate * blockAlign;
@@ -622,26 +632,79 @@ function createWavBuffer(
     pcmBuffer.length;
 
   const buffer =
-    Buffer.alloc(44 + dataSize);
+    Buffer.alloc(
+      44 + dataSize
+    );
 
-  buffer.write("RIFF", 0);
-  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write(
+    "RIFF",
+    0
+  );
 
-  buffer.write("WAVE", 8);
-  buffer.write("fmt ", 12);
+  buffer.writeUInt32LE(
+    36 + dataSize,
+    4
+  );
 
-  buffer.writeUInt32LE(16, 16);
-  buffer.writeUInt16LE(1, 20);
-  buffer.writeUInt16LE(channels, 22);
-  buffer.writeUInt32LE(sampleRate, 24);
-  buffer.writeUInt32LE(byteRate, 28);
-  buffer.writeUInt16LE(blockAlign, 32);
-  buffer.writeUInt16LE(bitsPerSample, 34);
+  buffer.write(
+    "WAVE",
+    8
+  );
 
-  buffer.write("data", 36);
-  buffer.writeUInt32LE(dataSize, 40);
+  buffer.write(
+    "fmt ",
+    12
+  );
 
-  pcmBuffer.copy(buffer, 44);
+  buffer.writeUInt32LE(
+    16,
+    16
+  );
+
+  buffer.writeUInt16LE(
+    1,
+    20
+  );
+
+  buffer.writeUInt16LE(
+    channels,
+    22
+  );
+
+  buffer.writeUInt32LE(
+    sampleRate,
+    24
+  );
+
+  buffer.writeUInt32LE(
+    byteRate,
+    28
+  );
+
+  buffer.writeUInt16LE(
+    blockAlign,
+    32
+  );
+
+  buffer.writeUInt16LE(
+    bitsPerSample,
+    34
+  );
+
+  buffer.write(
+    "data",
+    36
+  );
+
+  buffer.writeUInt32LE(
+    dataSize,
+    40
+  );
+
+  pcmBuffer.copy(
+    buffer,
+    44
+  );
 
   return buffer;
 }
@@ -649,14 +712,17 @@ function createWavBuffer(
 // =========================
 // ELEVENLABS SPEECH-TO-TEXT
 // =========================
-async function transcribeWithElevenLabs(wavBuffer) {
+async function transcribeWithElevenLabs(
+  wavBuffer
+) {
   if (!ELEVENLABS_API_KEY) {
     throw new Error(
       "ELEVENLABS_API_KEY is missing"
     );
   }
 
-  const form = new FormData();
+  const form =
+    new FormData();
 
   form.append(
     "file",
@@ -674,19 +740,20 @@ async function transcribeWithElevenLabs(wavBuffer) {
     "scribe_v2"
   );
 
-  const response = await fetch(
-    "https://api.elevenlabs.io/v1/speech-to-text",
-    {
-      method: "POST",
+  const response =
+    await fetch(
+      "https://api.elevenlabs.io/v1/speech-to-text",
+      {
+        method: "POST",
 
-      headers: {
-        "xi-api-key":
-          ELEVENLABS_API_KEY,
-      },
+        headers: {
+          "xi-api-key":
+            ELEVENLABS_API_KEY,
+        },
 
-      body: form,
-    }
-  );
+        body: form,
+      }
+    );
 
   if (!response.ok) {
     const errorText =
@@ -708,7 +775,9 @@ async function transcribeWithElevenLabs(wavBuffer) {
 // =========================
 // GEMINI / FERGIE RESPONSE
 // =========================
-async function askGemini(transcript) {
+async function askGemini(
+  transcript
+) {
   if (!GEMINI_API_KEY) {
     throw new Error(
       "GEMINI_API_KEY is missing"
@@ -736,34 +805,37 @@ Rules:
 - Just say what Fergie would actually say out loud.
 `;
 
-  const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-    {
-      method: "POST",
+  const response =
+    await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      {
+        method: "POST",
 
-      headers: {
-        "Content-Type":
-          "application/json",
+        headers: {
+          "Content-Type":
+            "application/json",
 
-        "x-goog-api-key":
-          GEMINI_API_KEY,
-      },
+          "x-goog-api-key":
+            GEMINI_API_KEY,
+        },
 
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-
-            parts: [
+        body:
+          JSON.stringify({
+            contents: [
               {
-                text: prompt,
+                role: "user",
+
+                parts: [
+                  {
+                    text:
+                      prompt,
+                  },
+                ],
               },
             ],
-          },
-        ],
-      }),
-    }
-  );
+          }),
+      }
+    );
 
   if (!response.ok) {
     const errorText =
@@ -795,29 +867,47 @@ Rules:
 // =========================
 // DECIDE WHETHER FERGIE RESPONDS
 // =========================
-function shouldFergieRespond(guildId, transcript) {
+function shouldFergieRespond(
+  guildId,
+  transcript
+) {
   const directlyAddressed =
-    /\bferg(?:ie|y)\b/i.test(transcript);
+    /\bferg(?:ie|y)\b/i.test(
+      transcript
+    );
 
   if (directlyAddressed) {
     return {
       respond: true,
-      reason: "directly addressed",
+      reason:
+        "directly addressed",
     };
   }
 
-  const now = Date.now();
+  const now =
+    Date.now();
 
   const lastUnsolicitedAt =
-    lastUnsolicitedReplyAtByGuild.get(guildId) || 0;
+    lastUnsolicitedReplyAtByGuild.get(
+      guildId
+    ) || 0;
 
   const elapsed =
-    now - lastUnsolicitedAt;
+    now -
+    lastUnsolicitedAt;
 
-  if (elapsed < UNSOLICITED_RESPONSE_COOLDOWN_MS) {
-    const secondsLeft = Math.ceil(
-      (UNSOLICITED_RESPONSE_COOLDOWN_MS - elapsed) / 1000
-    );
+  if (
+    elapsed <
+    UNSOLICITED_RESPONSE_COOLDOWN_MS
+  ) {
+    const secondsLeft =
+      Math.ceil(
+        (
+          UNSOLICITED_RESPONSE_COOLDOWN_MS -
+          elapsed
+        ) /
+          1000
+      );
 
     return {
       respond: false,
@@ -826,10 +916,12 @@ function shouldFergieRespond(guildId, transcript) {
     };
   }
 
-  const roll = Math.random();
+  const roll =
+    Math.random();
 
   const respond =
-    roll < UNSOLICITED_RESPONSE_CHANCE;
+    roll <
+    UNSOLICITED_RESPONSE_CHANCE;
 
   return {
     respond,
@@ -844,19 +936,49 @@ function shouldFergieRespond(guildId, transcript) {
 // =========================
 // DECIDE WHETHER FERGIE SPEAKS
 // =========================
-function shouldFergieSpeak(guildId, transcript) {
-  const now = Date.now();
+function shouldFergieSpeak(
+  guildId,
+  transcript
+) {
+  const directlyAddressed =
+    /\bferg(?:ie|y)\b/i.test(
+      transcript
+    );
+
+  // Directly saying Fergie/Fergy ALWAYS
+  // makes her speak and bypasses cooldown.
+  if (directlyAddressed) {
+    return {
+      speak: true,
+      reason:
+        "directly addressed => SPEAK",
+    };
+  }
+
+  const now =
+    Date.now();
 
   const lastSpokeAt =
-    lastVoiceReplyAtByGuild.get(guildId) || 0;
+    lastVoiceReplyAtByGuild.get(
+      guildId
+    ) || 0;
 
   const elapsed =
-    now - lastSpokeAt;
+    now -
+    lastSpokeAt;
 
-  if (elapsed < VOICE_COOLDOWN_MS) {
-    const secondsLeft = Math.ceil(
-      (VOICE_COOLDOWN_MS - elapsed) / 1000
-    );
+  if (
+    elapsed <
+    VOICE_COOLDOWN_MS
+  ) {
+    const secondsLeft =
+      Math.ceil(
+        (
+          VOICE_COOLDOWN_MS -
+          elapsed
+        ) /
+          1000
+      );
 
     return {
       speak: false,
@@ -865,27 +987,19 @@ function shouldFergieSpeak(guildId, transcript) {
     };
   }
 
-  const directlyAddressed =
-    /\bferg(?:ie|y)\b/i.test(transcript);
-
-  const chance =
-    directlyAddressed
-      ? VOICE_CHANCE_DIRECT
-      : VOICE_CHANCE_NORMAL;
-
   const roll =
     Math.random();
 
   const speak =
-    roll < chance;
+    roll <
+    VOICE_CHANCE_NORMAL;
 
   return {
     speak,
 
     reason:
-      `${directlyAddressed ? "direct" : "normal"} ` +
-      `roll=${roll.toFixed(3)} ` +
-      `chance=${chance.toFixed(2)} ` +
+      `normal roll=${roll.toFixed(3)} ` +
+      `chance=${VOICE_CHANCE_NORMAL.toFixed(2)} ` +
       `=> ${speak ? "SPEAK" : "TEXT ONLY"}`,
   };
 }
@@ -909,34 +1023,44 @@ async function generateFergieSpeech(
     );
   }
 
-  const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=mp3_44100_128`,
-    {
-      method: "POST",
+  const response =
+    await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=mp3_44100_128`,
+      {
+        method:
+          "POST",
 
-      headers: {
-        "xi-api-key":
-          ELEVENLABS_API_KEY,
+        headers: {
+          "xi-api-key":
+            ELEVENLABS_API_KEY,
 
-        "Content-Type":
-          "application/json",
-      },
-
-      body: JSON.stringify({
-        text: text,
-
-        model_id:
-          "eleven_flash_v2_5",
-
-        voice_settings: {
-          stability: 0.45,
-          similarity_boost: 0.8,
-          style: 0.25,
-          use_speaker_boost: true,
+          "Content-Type":
+            "application/json",
         },
-      }),
-    }
-  );
+
+        body:
+          JSON.stringify({
+            text: text,
+
+            model_id:
+              "eleven_flash_v2_5",
+
+            voice_settings: {
+              stability:
+                0.45,
+
+              similarity_boost:
+                0.8,
+
+              style:
+                0.25,
+
+              use_speaker_boost:
+                true,
+            },
+          }),
+      }
+    );
 
   if (!response.ok) {
     const errorText =
@@ -952,7 +1076,9 @@ async function generateFergieSpeech(
       await response.arrayBuffer()
     );
 
-  if (!audioBuffer.length) {
+  if (
+    !audioBuffer.length
+  ) {
     throw new Error(
       "ElevenLabs returned empty TTS audio"
     );
@@ -981,7 +1107,10 @@ async function playSpeechInVC(
   speechFile
 ) {
   return new Promise(
-    (resolve, reject) => {
+    (
+      resolve,
+      reject
+    ) => {
       const player =
         createAudioPlayer();
 
@@ -991,9 +1120,13 @@ async function playSpeechInVC(
         );
 
       const subscription =
-        connection.subscribe(player);
+        connection.subscribe(
+          player
+        );
 
-      if (!subscription) {
+      if (
+        !subscription
+      ) {
         reject(
           new Error(
             "Could not subscribe audio player to voice connection"
@@ -1002,23 +1135,30 @@ async function playSpeechInVC(
         return;
       }
 
-      let finished = false;
+      let finished =
+        false;
 
-      const cleanup = () => {
-        if (finished) {
-          return;
-        }
+      const cleanup =
+        () => {
+          if (
+            finished
+          ) {
+            return;
+          }
 
-        finished = true;
+          finished =
+            true;
 
-        try {
-          subscription.unsubscribe();
-        } catch {}
+          try {
+            subscription.unsubscribe();
+          } catch {}
 
-        try {
-          fs.unlinkSync(speechFile);
-        } catch {}
-      };
+          try {
+            fs.unlinkSync(
+              speechFile
+            );
+          } catch {}
+        };
 
       player.once(
         AudioPlayerStatus.Playing,
@@ -1041,11 +1181,15 @@ async function playSpeechInVC(
         "error",
         (error) => {
           cleanup();
-          reject(error);
+          reject(
+            error
+          );
         }
       );
 
-      player.play(resource);
+      player.play(
+        resource
+      );
     }
   );
 }
