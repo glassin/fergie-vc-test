@@ -53,15 +53,11 @@ const client = new Client({
 
 const commands = [
   new SlashCommandBuilder()
-    .setName("jointest")
+    .setName("join")
     .setDescription("Join your current voice channel"),
 
   new SlashCommandBuilder()
-    .setName("recordtest")
-    .setDescription("Record your voice for a few seconds"),
-
-  new SlashCommandBuilder()
-    .setName("leavetest")
+    .setName("leave")
     .setDescription("Leave the voice channel"),
 ].map((command) => command.toJSON());
 
@@ -95,9 +91,9 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   // =========================
-  // /jointest
+  // /join
   // =========================
-  if (interaction.commandName === "jointest") {
+  if (interaction.commandName === "join") {
     const member = interaction.member;
     const voiceChannel = member.voice.channel;
 
@@ -131,214 +127,9 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   // =========================
-  // /recordtest
+  // /leave
   // =========================
-  if (interaction.commandName === "recordtest") {
-    const connection = getVoiceConnection(interaction.guild.id);
-
-    if (!connection) {
-      await interaction.reply({
-        content: "Use `/jointest` first.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    const userId = interaction.user.id;
-
-    await interaction.reply(
-      "🔴 Recording started. Say one clear sentence, then stop talking."
-    );
-
-    console.log(`Starting recording for ${userId}`);
-
-    const opusStream = connection.receiver.subscribe(userId, {
-      end: {
-        behavior: EndBehaviorType.AfterSilence,
-        duration: 1200,
-      },
-    });
-
-    const decoder = new prism.opus.Decoder({
-      rate: 48000,
-      channels: 2,
-      frameSize: 960,
-    });
-
-    const pcmChunks = [];
-
-    opusStream
-      .pipe(decoder)
-      .on("data", (chunk) => {
-        pcmChunks.push(Buffer.from(chunk));
-      })
-      .on("error", (error) => {
-        console.error("Decoder error:", error);
-      })
-      .on("end", async () => {
-        const pcm = Buffer.concat(pcmChunks);
-
-        console.log(
-          `PCM CAPTURE COMPLETE: ${pcm.length} bytes`
-        );
-
-        if (!pcm.length) {
-          await interaction.channel.send(
-            "❌ No PCM audio captured."
-          );
-          return;
-        }
-
-        const wav = createWavBuffer(
-          pcm,
-          48000,
-          2,
-          16
-        );
-
-        const filename =
-          `/tmp/vc_test_${userId}.wav`;
-
-        fs.writeFileSync(filename, wav);
-
-        console.log(
-          `WAV CREATED: ${filename} | ${wav.length} bytes`
-        );
-
-        await interaction.channel.send({
-          content: `🎙️ Recording for <@${userId}>`,
-          files: [filename],
-        });
-
-        try {
-          const transcript =
-            await transcribeWithElevenLabs(wav);
-
-          if (!transcript) {
-            console.log("TRANSCRIPT: empty");
-
-            await interaction.channel.send(
-              "📝 I didn't get a usable transcript."
-            );
-
-            return;
-          }
-
-          console.log(
-            `TRANSCRIPT: ${transcript}`
-          );
-
-          await interaction.channel.send(
-            `📝 **Heard:** ${transcript}`
-          );
-
-          try {
-            const fergieReply =
-              await askFergieBrain(
-                userId,
-                interaction.member?.displayName || interaction.user.username,
-                transcript
-              );
-
-            if (!fergieReply) {
-              console.log(
-                "FERGIE REPLY: empty"
-              );
-
-              await interaction.channel.send(
-                "💬 Fergie had nothing to say. Tragic."
-              );
-
-              return;
-            }
-
-            console.log(
-              `FERGIE REPLY: ${fergieReply}`
-            );
-
-            await interaction.channel.send(
-              `💬 **Fergie:** ${fergieReply}`
-            );
-
-            const voiceDecision =
-              shouldFergieSpeak(
-                interaction.guild.id,
-                transcript
-              );
-
-            console.log(
-              `VOICE DECISION: ${voiceDecision.reason}`
-            );
-
-            if (voiceDecision.speak) {
-              try {
-                console.log(
-                  "Generating Fergie voice..."
-                );
-
-                const speechFile =
-                  await generateFergieSpeech(
-                    fergieReply,
-                    userId
-                  );
-
-                console.log(
-                  `TTS CREATED: ${speechFile}`
-                );
-
-                await playSpeechInVC(
-                  connection,
-                  speechFile
-                );
-
-                lastVoiceReplyAtByGuild.set(
-                  interaction.guild.id,
-                  Date.now()
-                );
-
-                console.log(
-                  "FERGIE VC PLAYBACK COMPLETE ✅"
-                );
-              } catch (error) {
-                console.error(
-                  "Fergie TTS/playback error:",
-                  error
-                );
-
-                await interaction.channel.send(
-                  "❌ Fergie voice playback failed. Check Railway logs."
-                );
-              }
-            }
-          } catch (error) {
-            console.error(
-              "Fergie brain reply error:",
-              error
-            );
-
-            await interaction.channel.send(
-              "❌ Fergie brain reply failed. Check Railway logs."
-            );
-          }
-        } catch (error) {
-          console.error(
-            "ElevenLabs transcription error:",
-            error
-          );
-
-          await interaction.channel.send(
-            "❌ ElevenLabs transcription failed. Check Railway logs."
-          );
-        }
-      });
-
-    return;
-  }
-
-  // =========================
-  // /leavetest
-  // =========================
-  if (interaction.commandName === "leavetest") {
+  if (interaction.commandName === "leave") {
     const connection =
       getVoiceConnection(
         interaction.guild.id
