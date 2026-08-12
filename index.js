@@ -28,6 +28,8 @@ const VOICE_CHANCE_DIRECT = 0.10;
 const VOICE_COOLDOWN_MS = 5 * 60 * 1000;
 
 const lastVoiceReplyAtByGuild = new Map();
+const autoListenStates = new Map();
+const autoProcessingGuilds = new Set();
 
 if (!TOKEN) {
   throw new Error("DISCORD_TOKEN environment variable is missing");
@@ -96,13 +98,19 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    joinVoiceChannel({
+    const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: interaction.guild.id,
       adapterCreator: interaction.guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: false,
-    });
+});
+
+startAutoListening(
+  connection,
+  interaction.guild,
+  interaction.channel
+);
 
     await interaction.reply(
       `Joined **${voiceChannel.name}** ✅`
@@ -328,14 +336,267 @@ client.on("interactionCreate", async (interaction) => {
     );
 
     if (connection) {
-      connection.destroy();
-    }
+  connection.destroy();
+}
 
-    await interaction.reply("Left VC.");
+autoListenStates.delete(
+  interaction.guild.id
+);
+
+lastVoiceReplyAtByGuild.delete(
+  interaction.guild.id
+);
+
+console.log(
+  `AUTO LISTEN STOPPED ✅ guild=${interaction.guild.id}`
+);
+
+await interaction.reply("Left VC.");
 
     return;
   }
 });
+
+// =========================
+// AUTOMATIC VC LISTENER
+// =========================
+function startAutoListening(
+  connection,
+  guild,
+  textChannel
+) {
+  const guildId = guild.id;
+
+  // Prevent duplicate listeners if /jointest is used again.
+  if (autoListenStates.has(guildId)) {
+    console.log(
+      `AUTO LISTEN already active for guild ${guildId}`
+    );
+    return;
+  }
+
+  const activeUsers = new Set();
+
+  autoListenStates.set(
+    guildId,
+    activeUsers
+  );
+
+  console.log(
+    `AUTO LISTEN STARTED ✅ guild=${guildId}`
+  );
+
+  connection.receiver.speaking.on(
+    "start",
+    (userId) => {
+      const member =
+        guild.members.cache.get(userId);
+
+      // Ignore unknown users, bots and Fergie herself.
+      if (
+        !member ||
+        member.user.bot ||
+        userId === client.user.id
+      ) {
+        return;
+      }
+
+      // Don't start a second recorder for the same person
+      // while their current utterance is still active.
+      if (activeUsers.has(userId)) {
+        return;
+      }
+
+      activeUsers.add(userId);
+
+      console.log(
+        `AUTO SPEAKING START: ${member.user.tag}`
+      );
+
+      const opusStream =
+        connection.receiver.subscribe(
+          userId,
+          {
+            end: {
+              behavior:
+                EndBehaviorType.AfterSilence,
+
+              duration: 1200,
+            },
+          }
+        );
+
+      const decoder =
+        new prism.opus.Decoder({
+          rate: 48000,
+          channels: 2,
+          frameSize: 960,
+        });
+
+      const pcmChunks = [];
+
+      opusStream
+        .pipe(decoder)
+
+        .on(
+          "data",
+          (chunk) => {
+            pcmChunks.push(
+              Buffer.from(chunk)
+            );
+          }
+        )
+
+        .on(
+          "error",
+          (error) => {
+            console.error(
+              `AUTO DECODER ERROR ${member.user.tag}:`,
+              error
+            );
+
+            activeUsers.delete(userId);
+          }
+        )
+
+        .on(
+          "end",
+          async () => {
+            activeUsers.delete(userId);
+
+            const pcm =
+              Buffer.concat(pcmChunks);
+
+            console.log(
+              `AUTO PCM COMPLETE ${member.user.tag}: ` +
+              `${pcm.length} bytes`
+            );
+
+            // Ignore tiny noises / accidental packets.
+            if (pcm.length < 96000) {
+              console.log(
+                `AUTO IGNORE tiny audio from ${member.user.tag}`
+              );
+              return;
+            }
+
+            const wav =
+              createWavBuffer(
+                pcm,
+                48000,
+                2,
+                16
+              );
+
+            try {
+              const transcript =
+                await transcribeWithElevenLabs(
+                  wav
+                );
+
+              if (!transcript) {
+                return;
+              }
+
+              console.log(
+                `AUTO HEARD ${member.displayName}: ` +
+                `"${transcript}"`
+              );
+
+              // Phase 1:
+              // Fergie only responds automatically
+              // if somebody actually says her name.
+              const directlyAddressed =
+                /\bferg(?:ie|y)\b/i.test(
+                  transcript
+                );
+
+              if (!directlyAddressed) {
+                console.log(
+                  "AUTO RESPONSE: ignored — Fergie not addressed"
+                );
+                return;
+              }
+
+              console.log(
+                "AUTO RESPONSE: Fergie was addressed ✅"
+              );
+
+              const fergieReply =
+                await askGemini(
+                  transcript
+                );
+
+              if (!fergieReply) {
+                return;
+              }
+
+              console.log(
+                `AUTO FERGIE REPLY: ${fergieReply}`
+              );
+
+              // Text remains the primary response.
+              await textChannel.send(
+                `💬 **Fergie:** ${fergieReply}`
+              );
+
+              // Existing 10% direct voice chance
+              // + existing 5-minute voice cooldown.
+              const voiceDecision =
+                shouldFergieSpeak(
+                  guildId,
+                  transcript
+                );
+
+              console.log(
+                `AUTO VOICE DECISION: ${voiceDecision.reason}`
+              );
+
+              if (!voiceDecision.speak) {
+                return;
+              }
+
+              try {
+                console.log(
+                  "AUTO generating Fergie voice..."
+                );
+
+                const speechFile =
+                  await generateFergieSpeech(
+                    fergieReply,
+                    userId
+                  );
+
+                await playSpeechInVC(
+                  connection,
+                  speechFile
+                );
+
+                lastVoiceReplyAtByGuild.set(
+                  guildId,
+                  Date.now()
+                );
+
+                console.log(
+                  "AUTO FERGIE VC PLAYBACK COMPLETE ✅"
+                );
+              } catch (error) {
+                console.error(
+                  "AUTO TTS/playback error:",
+                  error
+                );
+              }
+            } catch (error) {
+              console.error(
+                `AUTO PROCESSING ERROR ${member.user.tag}:`,
+                error
+              );
+            }
+          }
+        );
+    }
+  );
+}
 
 // =========================
 // CREATE WAV FILE
