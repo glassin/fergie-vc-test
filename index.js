@@ -27,6 +27,13 @@ const VOICE_CHANCE_NORMAL = 0.05;
 const VOICE_CHANCE_DIRECT = 0.10;
 const VOICE_COOLDOWN_MS = 5 * 60 * 1000;
 
+// Rare chance Fergie butts into a conversation
+// even when nobody said her name.
+const UNSOLICITED_RESPONSE_CHANCE = 0.05;
+
+// Prevent her from randomly interrupting too often.
+const UNSOLICITED_RESPONSE_COOLDOWN_MS = 2 * 60 * 1000;
+
 const lastVoiceReplyAtByGuild = new Map();
 const autoListenStates = new Map();
 const autoProcessingGuilds = new Set();
@@ -344,6 +351,10 @@ autoListenStates.delete(
 );
 
 lastVoiceReplyAtByGuild.delete(
+  lastUnsolicitedReplyAtByGuild.delete(
+  interaction.guild.id
+);
+    
   interaction.guild.id
 );
 
@@ -503,24 +514,37 @@ function startAutoListening(
                 `"${transcript}"`
               );
 
-              // Phase 1:
-              // Fergie only responds automatically
-              // if somebody actually says her name.
-              const directlyAddressed =
-                /\bferg(?:ie|y)\b/i.test(
-                  transcript
-                );
+              const responseDecision =
+  shouldFergieRespond(
+    guildId,
+    transcript
+  );
 
-              if (!directlyAddressed) {
-                console.log(
-                  "AUTO RESPONSE: ignored — Fergie not addressed"
-                );
-                return;
-              }
+console.log(
+  `AUTO RESPONSE DECISION: ${responseDecision.reason}`
+);
 
-              console.log(
-                "AUTO RESPONSE: Fergie was addressed ✅"
-              );
+if (!responseDecision.respond) {
+  return;
+}
+
+const directlyAddressed =
+  /\bferg(?:ie|y)\b/i.test(
+    transcript
+  );
+
+// If this was one of Fergie's rare unsolicited
+// interruptions, start the unsolicited cooldown.
+if (!directlyAddressed) {
+  lastUnsolicitedReplyAtByGuild.set(
+    guildId,
+    Date.now()
+  );
+
+  console.log(
+    "AUTO UNSOLICITED RESPONSE TRIGGERED 👀"
+  );
+}
 
               const fergieReply =
                 await askGemini(
@@ -790,6 +814,51 @@ Rules:
 // =========================
 // DECIDE WHETHER FERGIE SPEAKS
 // =========================
+function shouldFergieRespond(guildId, transcript) {
+  const directlyAddressed =
+    /\bferg(?:ie|y)\b/i.test(transcript);
+
+  if (directlyAddressed) {
+    return {
+      respond: true,
+      reason: "directly addressed",
+    };
+  }
+
+  const now = Date.now();
+
+  const lastUnsolicitedAt =
+    lastUnsolicitedReplyAtByGuild.get(guildId) || 0;
+
+  const elapsed =
+    now - lastUnsolicitedAt;
+
+  if (elapsed < UNSOLICITED_RESPONSE_COOLDOWN_MS) {
+    const secondsLeft = Math.ceil(
+      (UNSOLICITED_RESPONSE_COOLDOWN_MS - elapsed) / 1000
+    );
+
+    return {
+      respond: false,
+      reason:
+        `unsolicited cooldown active (${secondsLeft}s left)`,
+    };
+  }
+
+  const roll = Math.random();
+
+  const respond =
+    roll < UNSOLICITED_RESPONSE_CHANCE;
+
+  return {
+    respond,
+
+    reason:
+      `unsolicited roll=${roll.toFixed(3)} ` +
+      `chance=${UNSOLICITED_RESPONSE_CHANCE.toFixed(2)} ` +
+      `=> ${respond ? "RESPOND" : "IGNORE"}`,
+  };
+}
 function shouldFergieSpeak(guildId, transcript) {
   const now = Date.now();
 
