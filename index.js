@@ -17,6 +17,7 @@ const fs = require("fs");
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 if (!TOKEN) {
   throw new Error("DISCORD_TOKEN environment variable is missing");
@@ -179,13 +180,37 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const transcript = await transcribeWithElevenLabs(wav);
 
-          if (transcript) {
-            console.log(`TRANSCRIPT: ${transcript}`);
+if (transcript) {
+  console.log(`TRANSCRIPT: ${transcript}`);
 
-            await interaction.channel.send(
-              `📝 **Heard:** ${transcript}`
-            );
-          } else {
+  await interaction.channel.send(
+    `📝 **Heard:** ${transcript}`
+  );
+
+  try {
+    const fergieReply = await askGemini(transcript);
+
+    if (fergieReply) {
+      console.log(`FERGIE REPLY: ${fergieReply}`);
+
+      await interaction.channel.send(
+        `💬 **Fergie:** ${fergieReply}`
+      );
+    } else {
+      console.log("FERGIE REPLY: empty");
+
+      await interaction.channel.send(
+        "💬 Fergie had nothing to say. Tragic."
+      );
+    }
+  } catch (error) {
+    console.error("Gemini reply error:", error);
+
+    await interaction.channel.send(
+      "❌ Gemini reply failed. Check Railway logs."
+    );
+  }
+}
             console.log("TRANSCRIPT: empty");
 
             await interaction.channel.send(
@@ -318,5 +343,71 @@ async function transcribeWithElevenLabs(wavBuffer) {
 
   return (result.text || "").trim();
 }
+async function askGemini(transcript) {
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is missing");
+  }
 
+  const prompt = `
+You are Fergie.
+
+You are a bratty, dramatic, chronically caffeinated Discord qtpi.
+
+Someone just spoke to you in a Discord voice channel and said:
+
+"${transcript}"
+
+Reply naturally as Fergie.
+
+Rules:
+- Answer what they said directly.
+- Keep it conversational.
+- Keep it short: 1-3 sentences.
+- Be sarcastic and playful, but not genuinely mean.
+- Do not mention transcription, speech-to-text, AI, prompts, or being a bot.
+- Do not describe actions in brackets.
+- Just say what Fergie would actually say out loud.
+`;
+
+  const response = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: prompt,
+              },
+            ],
+          },
+        ],
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+
+    throw new Error(
+      `Gemini failed: ${response.status} ${errorText}`
+    );
+  }
+
+  const result = await response.json();
+
+  const reply =
+    result?.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || "")
+      .join("")
+      .trim() || "";
+
+  return reply;
+}
 client.login(TOKEN);
