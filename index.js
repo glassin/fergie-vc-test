@@ -35,6 +35,7 @@ const UNSOLICITED_RESPONSE_CHANCE = 0.05;
 const UNSOLICITED_RESPONSE_COOLDOWN_MS = 2 * 60 * 1000;
 
 const lastVoiceReplyAtByGuild = new Map();
+const lastUnsolicitedReplyAtByGuild = new Map();
 const autoListenStates = new Map();
 const autoProcessingGuilds = new Set();
 
@@ -111,13 +112,13 @@ client.on("interactionCreate", async (interaction) => {
       adapterCreator: interaction.guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: false,
-});
+    });
 
-startAutoListening(
-  connection,
-  interaction.guild,
-  interaction.channel
-);
+    startAutoListening(
+      connection,
+      interaction.guild,
+      interaction.channel
+    );
 
     await interaction.reply(
       `Joined **${voiceChannel.name}** ✅`
@@ -208,9 +209,6 @@ startAutoListening(
           files: [filename],
         });
 
-        // =========================
-        // ELEVENLABS TRANSCRIPTION
-        // =========================
         try {
           const transcript =
             await transcribeWithElevenLabs(wav);
@@ -231,9 +229,6 @@ startAutoListening(
             `📝 **Heard:** ${transcript}`
           );
 
-          // =========================
-          // GEMINI RESPONSE
-          // =========================
           try {
             const fergieReply =
               await askGemini(transcript);
@@ -252,14 +247,10 @@ startAutoListening(
               `FERGIE REPLY: ${fergieReply}`
             );
 
-            // TEXT ALWAYS STAYS
             await interaction.channel.send(
               `💬 **Fergie:** ${fergieReply}`
             );
 
-            // =========================
-            // DECIDE IF SHE SPEAKS
-            // =========================
             const voiceDecision = shouldFergieSpeak(
               interaction.guild.id,
               transcript
@@ -343,26 +334,26 @@ startAutoListening(
     );
 
     if (connection) {
-  connection.destroy();
-}
+      connection.destroy();
+    }
 
-autoListenStates.delete(
-  interaction.guild.id
-);
+    autoListenStates.delete(
+      interaction.guild.id
+    );
 
-lastVoiceReplyAtByGuild.delete(
-  lastUnsolicitedReplyAtByGuild.delete(
-  interaction.guild.id
-);
-    
-  interaction.guild.id
-);
+    lastVoiceReplyAtByGuild.delete(
+      interaction.guild.id
+    );
 
-console.log(
-  `AUTO LISTEN STOPPED ✅ guild=${interaction.guild.id}`
-);
+    lastUnsolicitedReplyAtByGuild.delete(
+      interaction.guild.id
+    );
 
-await interaction.reply("Left VC.");
+    console.log(
+      `AUTO LISTEN STOPPED ✅ guild=${interaction.guild.id}`
+    );
+
+    await interaction.reply("Left VC.");
 
     return;
   }
@@ -378,7 +369,6 @@ function startAutoListening(
 ) {
   const guildId = guild.id;
 
-  // Prevent duplicate listeners if /jointest is used again.
   if (autoListenStates.has(guildId)) {
     console.log(
       `AUTO LISTEN already active for guild ${guildId}`
@@ -403,7 +393,6 @@ function startAutoListening(
       const member =
         guild.members.cache.get(userId);
 
-      // Ignore unknown users, bots and Fergie herself.
       if (
         !member ||
         member.user.bot ||
@@ -412,8 +401,6 @@ function startAutoListening(
         return;
       }
 
-      // Don't start a second recorder for the same person
-      // while their current utterance is still active.
       if (activeUsers.has(userId)) {
         return;
       }
@@ -483,7 +470,6 @@ function startAutoListening(
               `${pcm.length} bytes`
             );
 
-            // Ignore tiny noises / accidental packets.
             if (pcm.length < 96000) {
               console.log(
                 `AUTO IGNORE tiny audio from ${member.user.tag}`
@@ -515,36 +501,34 @@ function startAutoListening(
               );
 
               const responseDecision =
-  shouldFergieRespond(
-    guildId,
-    transcript
-  );
+                shouldFergieRespond(
+                  guildId,
+                  transcript
+                );
 
-console.log(
-  `AUTO RESPONSE DECISION: ${responseDecision.reason}`
-);
+              console.log(
+                `AUTO RESPONSE DECISION: ${responseDecision.reason}`
+              );
 
-if (!responseDecision.respond) {
-  return;
-}
+              if (!responseDecision.respond) {
+                return;
+              }
 
-const directlyAddressed =
-  /\bferg(?:ie|y)\b/i.test(
-    transcript
-  );
+              const directlyAddressed =
+                /\bferg(?:ie|y)\b/i.test(
+                  transcript
+                );
 
-// If this was one of Fergie's rare unsolicited
-// interruptions, start the unsolicited cooldown.
-if (!directlyAddressed) {
-  lastUnsolicitedReplyAtByGuild.set(
-    guildId,
-    Date.now()
-  );
+              if (!directlyAddressed) {
+                lastUnsolicitedReplyAtByGuild.set(
+                  guildId,
+                  Date.now()
+                );
 
-  console.log(
-    "AUTO UNSOLICITED RESPONSE TRIGGERED 👀"
-  );
-}
+                console.log(
+                  "AUTO UNSOLICITED RESPONSE TRIGGERED 👀"
+                );
+              }
 
               const fergieReply =
                 await askGemini(
@@ -559,13 +543,10 @@ if (!directlyAddressed) {
                 `AUTO FERGIE REPLY: ${fergieReply}`
               );
 
-              // Text remains the primary response.
               await textChannel.send(
                 `💬 **Fergie:** ${fergieReply}`
               );
 
-              // Existing 10% direct voice chance
-              // + existing 5-minute voice cooldown.
               const voiceDecision =
                 shouldFergieSpeak(
                   guildId,
@@ -812,7 +793,7 @@ Rules:
 }
 
 // =========================
-// DECIDE WHETHER FERGIE SPEAKS
+// DECIDE WHETHER FERGIE RESPONDS
 // =========================
 function shouldFergieRespond(guildId, transcript) {
   const directlyAddressed =
@@ -859,6 +840,10 @@ function shouldFergieRespond(guildId, transcript) {
       `=> ${respond ? "RESPOND" : "IGNORE"}`,
   };
 }
+
+// =========================
+// DECIDE WHETHER FERGIE SPEAKS
+// =========================
 function shouldFergieSpeak(guildId, transcript) {
   const now = Date.now();
 
