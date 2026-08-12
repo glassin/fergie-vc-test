@@ -21,7 +21,8 @@ const fs = require("fs");
 const TOKEN = process.env.DISCORD_TOKEN;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const FERGIE_BRAIN_URL = (process.env.FERGIE_BRAIN_URL || "").replace(/\/$/, "");
+const VC_BRIDGE_SECRET = process.env.VC_BRIDGE_SECRET;
 
 const VOICE_CHANCE_NORMAL = 0.05;
 const VOICE_CHANCE_DIRECT = 1.00;
@@ -231,7 +232,11 @@ client.on("interactionCreate", async (interaction) => {
 
           try {
             const fergieReply =
-              await askGemini(transcript);
+              await askFergieBrain(
+                userId,
+                interaction.member?.displayName || interaction.user.username,
+                transcript
+              );
 
             if (!fergieReply) {
               console.log(
@@ -305,12 +310,12 @@ client.on("interactionCreate", async (interaction) => {
             }
           } catch (error) {
             console.error(
-              "Gemini reply error:",
+              "Fergie brain reply error:",
               error
             );
 
             await interaction.channel.send(
-              "❌ Gemini reply failed. Check Railway logs."
+              "❌ Fergie brain reply failed. Check Railway logs."
             );
           }
         } catch (error) {
@@ -538,7 +543,9 @@ function startAutoListening(
               }
 
               const fergieReply =
-                await askGemini(
+                await askFergieBrain(
+                  userId,
+                  member.displayName,
                   transcript
                 );
 
@@ -773,41 +780,28 @@ async function transcribeWithElevenLabs(
 }
 
 // =========================
-// GEMINI / FERGIE RESPONSE
+// REAL FERGIE BRAIN BRIDGE
 // =========================
-async function askGemini(
+async function askFergieBrain(
+  userId,
+  displayName,
   transcript
 ) {
-  if (!GEMINI_API_KEY) {
+  if (!FERGIE_BRAIN_URL) {
     throw new Error(
-      "GEMINI_API_KEY is missing"
+      "FERGIE_BRAIN_URL is missing"
     );
   }
 
-  const prompt = `
-You are Fergie.
-
-You are a bratty, dramatic, chronically caffeinated Discord qtpi.
-
-Someone just spoke to you in a Discord voice channel and said:
-
-"${transcript}"
-
-Reply naturally as Fergie.
-
-Rules:
-- Answer what they said directly.
-- Keep it conversational.
-- Keep it short: 1-3 sentences.
-- Be sarcastic and playful, but not genuinely mean.
-- Do not mention transcription, speech-to-text, AI, prompts, or being a bot.
-- Do not describe actions in brackets.
-- Just say what Fergie would actually say out loud.
-`;
+  if (!VC_BRIDGE_SECRET) {
+    throw new Error(
+      "VC_BRIDGE_SECRET is missing"
+    );
+  }
 
   const response =
     await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      `${FERGIE_BRAIN_URL}/vc-brain`,
       {
         method: "POST",
 
@@ -815,25 +809,16 @@ Rules:
           "Content-Type":
             "application/json",
 
-          "x-goog-api-key":
-            GEMINI_API_KEY,
+          "X-VC-Bridge-Secret":
+            VC_BRIDGE_SECRET,
         },
 
-        body:
-          JSON.stringify({
-            contents: [
-              {
-                role: "user",
-
-                parts: [
-                  {
-                    text:
-                      prompt,
-                  },
-                ],
-              },
-            ],
-          }),
+        body: JSON.stringify({
+          user_id: userId,
+          display_name:
+            displayName || "Unknown member",
+          transcript: transcript,
+        }),
       }
     );
 
@@ -842,26 +827,22 @@ Rules:
       await response.text();
 
     throw new Error(
-      `Gemini failed: ${response.status} ${errorText}`
+      `Fergie brain bridge failed: ${response.status} ${errorText}`
     );
   }
 
   const result =
     await response.json();
 
-  const reply =
-    result
-      ?.candidates?.[0]
-      ?.content
-      ?.parts
-      ?.map(
-        (part) =>
-          part.text || ""
-      )
-      .join("")
-      .trim() || "";
+  if (!result?.ok) {
+    throw new Error(
+      `Fergie brain bridge returned an error: ${JSON.stringify(result)}`
+    );
+  }
 
-  return reply;
+  return (
+    result.reply || ""
+  ).trim();
 }
 
 // =========================
