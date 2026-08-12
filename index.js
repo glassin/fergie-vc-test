@@ -16,6 +16,7 @@ const prism = require("prism-media");
 const fs = require("fs");
 
 const TOKEN = process.env.DISCORD_TOKEN;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 
 if (!TOKEN) {
   throw new Error("DISCORD_TOKEN environment variable is missing");
@@ -175,7 +176,29 @@ client.on("interactionCreate", async (interaction) => {
           files: [filename],
         });
       });
+try {
+  const transcript = await transcribeWithElevenLabs(wav);
 
+  if (transcript) {
+    console.log(`TRANSCRIPT: ${transcript}`);
+
+    await interaction.channel.send(
+      `📝 **Heard:** ${transcript}`
+    );
+  } else {
+    console.log("TRANSCRIPT: empty");
+
+    await interaction.channel.send(
+      "📝 I didn't get a usable transcript."
+    );
+  }
+} catch (error) {
+  console.error("ElevenLabs transcription error:", error);
+
+  await interaction.channel.send(
+    "❌ ElevenLabs transcription failed. Check Railway logs."
+  );
+}
     return;
   }
 
@@ -254,5 +277,41 @@ function createWavBuffer(
 
   return buffer;
 }
+async function transcribeWithElevenLabs(wavBuffer) {
+  if (!ELEVENLABS_API_KEY) {
+    throw new Error("ELEVENLABS_API_KEY is missing");
+  }
 
+  const form = new FormData();
+
+  form.append(
+    "file",
+    new Blob([wavBuffer], { type: "audio/wav" }),
+    "fergie_vc_test.wav"
+  );
+
+  form.append("model_id", "scribe_v2");
+
+  const response = await fetch(
+    "https://api.elevenlabs.io/v1/speech-to-text",
+    {
+      method: "POST",
+      headers: {
+        "xi-api-key": ELEVENLABS_API_KEY,
+      },
+      body: form,
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `ElevenLabs STT failed: ${response.status} ${errorText}`
+    );
+  }
+
+  const result = await response.json();
+
+  return (result.text || "").trim();
+}
 client.login(TOKEN);
