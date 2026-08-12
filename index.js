@@ -24,7 +24,7 @@ const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const VOICE_CHANCE_NORMAL = 0.05;
-const VOICE_CHANCE_DIRECT = 0.10;
+const VOICE_CHANCE_DIRECT = 1.00;
 const VOICE_COOLDOWN_MS = 5 * 60 * 1000;
 
 // Rare chance Fergie butts into a conversation
