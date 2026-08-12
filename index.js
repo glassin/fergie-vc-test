@@ -69,6 +69,8 @@ client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log("FERGIE NODE VC TEST READY ✅");
 
+  await checkFergieBrainHealth();
+
   const rest = new REST({ version: "10" }).setToken(TOKEN);
 
   try {
@@ -527,9 +529,7 @@ function startAutoListening(
               }
 
               const directlyAddressed =
-                /\bferg(?:ie|y)\b/i.test(
-                  transcript
-                );
+                isFergieAddressed(transcript);
 
               if (!directlyAddressed) {
                 lastUnsolicitedReplyAtByGuild.set(
@@ -846,6 +846,64 @@ async function askFergieBrain(
 }
 
 // =========================
+// FERGIE BRAIN HEALTH CHECK
+// =========================
+async function checkFergieBrainHealth() {
+  if (!FERGIE_BRAIN_URL) {
+    console.error(
+      "FERGIE BRAIN CONNECTION ❌ FERGIE_BRAIN_URL is missing"
+    );
+    return false;
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_BRAIN_URL}/health`
+    );
+
+    if (!response.ok) {
+      console.error(
+        `FERGIE BRAIN CONNECTION ❌ status=${response.status}`
+      );
+      return false;
+    }
+
+    const result = await response.json();
+
+    if (!result?.ok) {
+      console.error(
+        `FERGIE BRAIN CONNECTION ❌ invalid response=${JSON.stringify(result)}`
+      );
+      return false;
+    }
+
+    console.log(
+      "FERGIE BRAIN CONNECTION ✅"
+    );
+
+    return true;
+  } catch (error) {
+    console.error(
+      "FERGIE BRAIN CONNECTION ❌",
+      error
+    );
+
+    return false;
+  }
+}
+
+// =========================
+// DETECT FERGIE'S NAME
+// =========================
+function isFergieAddressed(
+  transcript
+) {
+  return /\b(?:ferg(?:ie|i|y)?|bergy)\b/i.test(
+    transcript || ""
+  );
+}
+
+// =========================
 // DECIDE WHETHER FERGIE RESPONDS
 // =========================
 function shouldFergieRespond(
@@ -853,7 +911,7 @@ function shouldFergieRespond(
   transcript
 ) {
   const directlyAddressed =
-    /\bferg(?:ie|y)\b/i.test(
+    isFergieAddressed(
       transcript
     );
 
@@ -922,7 +980,7 @@ function shouldFergieSpeak(
   transcript
 ) {
   const directlyAddressed =
-    /\bferg(?:ie|y)\b/i.test(
+    isFergieAddressed(
       transcript
     );
 
