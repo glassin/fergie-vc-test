@@ -10,6 +10,9 @@ const {
   joinVoiceChannel,
   getVoiceConnection,
   EndBehaviorType,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
 } = require("@discordjs/voice");
 
 const prism = require("prism-media");
@@ -17,6 +20,7 @@ const fs = require("fs");
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 if (!TOKEN) {
@@ -123,15 +127,12 @@ client.on("interactionCreate", async (interaction) => {
 
     console.log(`Starting recording for ${userId}`);
 
-    const opusStream = connection.receiver.subscribe(
-      userId,
-      {
-        end: {
-          behavior: EndBehaviorType.AfterSilence,
-          duration: 1200,
-        },
-      }
-    );
+    const opusStream = connection.receiver.subscribe(userId, {
+      end: {
+        behavior: EndBehaviorType.AfterSilence,
+        duration: 1200,
+      },
+    });
 
     const decoder = new prism.opus.Decoder({
       rate: 48000,
@@ -166,7 +167,6 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        // Convert captured PCM into WAV.
         const wav = createWavBuffer(
           pcm,
           48000,
@@ -182,7 +182,6 @@ client.on("interactionCreate", async (interaction) => {
           `WAV CREATED: ${filename} | ${wav.length} bytes`
         );
 
-        // Send recording into Discord so we can verify it.
         await interaction.channel.send({
           content: `🎙️ Recording for <@${userId}>`,
           files: [filename],
@@ -195,56 +194,92 @@ client.on("interactionCreate", async (interaction) => {
           const transcript =
             await transcribeWithElevenLabs(wav);
 
-          if (transcript) {
-            console.log(
-              `TRANSCRIPT: ${transcript}`
-            );
+          if (!transcript) {
+            console.log("TRANSCRIPT: empty");
 
             await interaction.channel.send(
-              `📝 **Heard:** ${transcript}`
+              "📝 I didn't get a usable transcript."
+            );
+
+            return;
+          }
+
+          console.log(`TRANSCRIPT: ${transcript}`);
+
+          await interaction.channel.send(
+            `📝 **Heard:** ${transcript}`
+          );
+
+          // =========================
+          // GEMINI RESPONSE
+          // =========================
+          try {
+            const fergieReply =
+              await askGemini(transcript);
+
+            if (!fergieReply) {
+              console.log("FERGIE REPLY: empty");
+
+              await interaction.channel.send(
+                "💬 Fergie had nothing to say. Tragic."
+              );
+
+              return;
+            }
+
+            console.log(
+              `FERGIE REPLY: ${fergieReply}`
+            );
+
+            // KEEP THE TEXT RESPONSE
+            await interaction.channel.send(
+              `💬 **Fergie:** ${fergieReply}`
             );
 
             // =========================
-            // GEMINI RESPONSE
+            // ELEVENLABS TTS + VC
             // =========================
             try {
-              const fergieReply =
-                await askGemini(transcript);
+              console.log(
+                "Generating Fergie voice..."
+              );
 
-              if (fergieReply) {
-                console.log(
-                  `FERGIE REPLY: ${fergieReply}`
-                );
-
-                await interaction.channel.send(
-                  `💬 **Fergie:** ${fergieReply}`
-                );
-              } else {
-                console.log(
-                  "FERGIE REPLY: empty"
+              const speechFile =
+                await generateFergieSpeech(
+                  fergieReply,
+                  userId
                 );
 
-                await interaction.channel.send(
-                  "💬 Fergie had nothing to say. Tragic."
-                );
-              }
+              console.log(
+                `TTS CREATED: ${speechFile}`
+              );
+
+              await playSpeechInVC(
+                connection,
+                speechFile
+              );
+
+              console.log(
+                "FERGIE VC PLAYBACK COMPLETE ✅"
+              );
             } catch (error) {
               console.error(
-                "Gemini reply error:",
+                "Fergie TTS/playback error:",
                 error
               );
 
               await interaction.channel.send(
-                "❌ Gemini reply failed. Check Railway logs."
+                "❌ Fergie voice playback failed. Check Railway logs."
               );
             }
-          } else {
-            console.log(
-              "TRANSCRIPT: empty"
+          } catch (error) {
+            console.error(
+              "Gemini reply error:",
+              error
             );
 
             await interaction.channel.send(
-              "📝 I didn't get a usable transcript."
+              "❌ Gemini reply failed. Check Railway logs."
             );
           }
         } catch (error) {
@@ -302,64 +337,23 @@ function createWavBuffer(
     Buffer.alloc(44 + dataSize);
 
   buffer.write("RIFF", 0);
-
-  buffer.writeUInt32LE(
-    36 + dataSize,
-    4
-  );
+  buffer.writeUInt32LE(36 + dataSize, 4);
 
   buffer.write("WAVE", 8);
   buffer.write("fmt ", 12);
 
-  buffer.writeUInt32LE(
-    16,
-    16
-  );
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(channels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(byteRate, 28);
+  buffer.writeUInt16LE(blockAlign, 32);
+  buffer.writeUInt16LE(bitsPerSample, 34);
 
-  buffer.writeUInt16LE(
-    1,
-    20
-  );
+  buffer.write("data", 36);
+  buffer.writeUInt32LE(dataSize, 40);
 
-  buffer.writeUInt16LE(
-    channels,
-    22
-  );
-
-  buffer.writeUInt32LE(
-    sampleRate,
-    24
-  );
-
-  buffer.writeUInt32LE(
-    byteRate,
-    28
-  );
-
-  buffer.writeUInt16LE(
-    blockAlign,
-    32
-  );
-
-  buffer.writeUInt16LE(
-    bitsPerSample,
-    34
-  );
-
-  buffer.write(
-    "data",
-    36
-  );
-
-  buffer.writeUInt32LE(
-    dataSize,
-    40
-  );
-
-  pcmBuffer.copy(
-    buffer,
-    44
-  );
+  pcmBuffer.copy(buffer, 44);
 
   return buffer;
 }
@@ -508,6 +502,166 @@ Rules:
       .trim() || "";
 
   return reply;
+}
+
+// =========================
+// ELEVENLABS TEXT-TO-SPEECH
+// =========================
+async function generateFergieSpeech(
+  text,
+  userId
+) {
+  if (!ELEVENLABS_API_KEY) {
+    throw new Error(
+      "ELEVENLABS_API_KEY is missing"
+    );
+  }
+
+  if (!ELEVENLABS_VOICE_ID) {
+    throw new Error(
+      "ELEVENLABS_VOICE_ID is missing"
+    );
+  }
+
+  const response = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=mp3_44100_128`,
+    {
+      method: "POST",
+
+      headers: {
+        "xi-api-key":
+          ELEVENLABS_API_KEY,
+
+        "Content-Type":
+          "application/json",
+      },
+
+      body: JSON.stringify({
+        text: text,
+
+        model_id:
+          "eleven_flash_v2_5",
+
+        voice_settings: {
+          stability: 0.45,
+          similarity_boost: 0.8,
+          style: 0.25,
+          use_speaker_boost: true,
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText =
+      await response.text();
+
+    throw new Error(
+      `ElevenLabs TTS failed: ${response.status} ${errorText}`
+    );
+  }
+
+  const audioBuffer =
+    Buffer.from(
+      await response.arrayBuffer()
+    );
+
+  if (!audioBuffer.length) {
+    throw new Error(
+      "ElevenLabs returned empty TTS audio"
+    );
+  }
+
+  const speechFile =
+    `/tmp/fergie_reply_${userId}_${Date.now()}.mp3`;
+
+  fs.writeFileSync(
+    speechFile,
+    audioBuffer
+  );
+
+  console.log(
+    `FERGIE TTS AUDIO: ${audioBuffer.length} bytes`
+  );
+
+  return speechFile;
+}
+
+// =========================
+// PLAY FERGIE IN DISCORD VC
+// =========================
+async function playSpeechInVC(
+  connection,
+  speechFile
+) {
+  return new Promise(
+    (resolve, reject) => {
+      const player =
+        createAudioPlayer();
+
+      const resource =
+        createAudioResource(
+          speechFile
+        );
+
+      const subscription =
+        connection.subscribe(player);
+
+      if (!subscription) {
+        reject(
+          new Error(
+            "Could not subscribe audio player to voice connection"
+          )
+        );
+        return;
+      }
+
+      let finished = false;
+
+      const cleanup = () => {
+        if (finished) {
+          return;
+        }
+
+        finished = true;
+
+        try {
+          subscription.unsubscribe();
+        } catch {}
+
+        try {
+          fs.unlinkSync(speechFile);
+        } catch {}
+      };
+
+      player.once(
+        AudioPlayerStatus.Playing,
+        () => {
+          console.log(
+            "FERGIE IS SPEAKING 🔊"
+          );
+        }
+      );
+
+      player.once(
+        AudioPlayerStatus.Idle,
+        () => {
+          cleanup();
+          resolve();
+        }
+      );
+
+      player.once(
+        "error",
+        (error) => {
+          cleanup();
+          reject(error);
+        }
+      );
+
+      player.play(resource);
+    }
+  );
 }
 
 // =========================
