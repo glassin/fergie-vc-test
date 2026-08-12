@@ -23,8 +23,8 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const VOICE_CHANCE_NORMAL = 0.15;
-const VOICE_CHANCE_DIRECT = 0.40;
+const VOICE_CHANCE_NORMAL = 0.05;
+const VOICE_CHANCE_DIRECT = 0.10;
 const VOICE_COOLDOWN_MS = 5 * 60 * 1000;
 
 const lastVoiceReplyAtByGuild = new Map();
