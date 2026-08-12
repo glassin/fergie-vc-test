@@ -175,30 +175,32 @@ client.on("interactionCreate", async (interaction) => {
           content: `🎙️ Recording for <@${userId}>`,
           files: [filename],
         });
+
+        try {
+          const transcript = await transcribeWithElevenLabs(wav);
+
+          if (transcript) {
+            console.log(`TRANSCRIPT: ${transcript}`);
+
+            await interaction.channel.send(
+              `📝 **Heard:** ${transcript}`
+            );
+          } else {
+            console.log("TRANSCRIPT: empty");
+
+            await interaction.channel.send(
+              "📝 I didn't get a usable transcript."
+            );
+          }
+        } catch (error) {
+          console.error("ElevenLabs transcription error:", error);
+
+          await interaction.channel.send(
+            "❌ ElevenLabs transcription failed. Check Railway logs."
+          );
+        }
       });
-try {
-  const transcript = await transcribeWithElevenLabs(wav);
 
-  if (transcript) {
-    console.log(`TRANSCRIPT: ${transcript}`);
-
-    await interaction.channel.send(
-      `📝 **Heard:** ${transcript}`
-    );
-  } else {
-    console.log("TRANSCRIPT: empty");
-
-    await interaction.channel.send(
-      "📝 I didn't get a usable transcript."
-    );
-  }
-} catch (error) {
-  console.error("ElevenLabs transcription error:", error);
-
-  await interaction.channel.send(
-    "❌ ElevenLabs transcription failed. Check Railway logs."
-  );
-}
     return;
   }
 
@@ -277,6 +279,7 @@ function createWavBuffer(
 
   return buffer;
 }
+
 async function transcribeWithElevenLabs(wavBuffer) {
   if (!ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is missing");
@@ -305,6 +308,7 @@ async function transcribeWithElevenLabs(wavBuffer) {
 
   if (!response.ok) {
     const errorText = await response.text();
+
     throw new Error(
       `ElevenLabs STT failed: ${response.status} ${errorText}`
     );
@@ -314,4 +318,5 @@ async function transcribeWithElevenLabs(wavBuffer) {
 
   return (result.text || "").trim();
 }
+
 client.login(TOKEN);
