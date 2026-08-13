@@ -81,6 +81,47 @@ client.once("ready", async () => {
   }
 });
 
+
+function leaveVoiceForGuild(guildId) {
+  const connection = getVoiceConnection(guildId);
+
+  if (connection) {
+    connection.destroy();
+  }
+
+  autoListenStates.delete(guildId);
+  lastVoiceReplyAtByGuild.delete(guildId);
+  lastUnsolicitedReplyAtByGuild.delete(guildId);
+  autoProcessingGuilds.delete(guildId);
+
+  console.log(`AUTO LISTEN STOPPED ✅ guild=${guildId}`);
+
+  return Boolean(connection);
+}
+
+// Natural spoken VC leave requests. Fergie must be directly addressed so
+// normal conversation like "I should leave VC" cannot kick her out.
+function isFergieLeaveRequest(transcript) {
+  const text = (transcript || "").trim();
+
+  if (!isFergieAddressed(text)) {
+    return false;
+  }
+
+  const leaveIntent =
+    /\b(?:leave|exit|disconnect|get\s+out|get\s+outta|get\s+off|go\s+away|bye|goodbye|adios|adiós|vete|salte)\b/i;
+
+  const vcContext =
+    /\b(?:vc|voice|voice\s+chat|call|channel|here)\b/i;
+
+  // Strong leave verbs are enough when Fergie is addressed; softer bye/adios
+  // wording requires VC/call context.
+  const strongLeave =
+    /\b(?:leave|exit|disconnect|get\s+out|get\s+outta|get\s+off|vete|salte)\b/i;
+
+  return strongLeave.test(text) || (leaveIntent.test(text) && vcContext.test(text));
+}
+
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) {
     return;
@@ -130,30 +171,7 @@ client.on("interactionCreate", async (interaction) => {
   // /leave
   // =========================
   if (interaction.commandName === "leave") {
-    const connection =
-      getVoiceConnection(
-        interaction.guild.id
-      );
-
-    if (connection) {
-      connection.destroy();
-    }
-
-    autoListenStates.delete(
-      interaction.guild.id
-    );
-
-    lastVoiceReplyAtByGuild.delete(
-      interaction.guild.id
-    );
-
-    lastUnsolicitedReplyAtByGuild.delete(
-      interaction.guild.id
-    );
-
-    console.log(
-      `AUTO LISTEN STOPPED ✅ guild=${interaction.guild.id}`
-    );
+    leaveVoiceForGuild(interaction.guild.id);
 
     await interaction.reply("Left VC.");
 
@@ -302,6 +320,24 @@ function startAutoListening(
                 `AUTO HEARD ${member.displayName}: ` +
                 `"${transcript}"`
               );
+
+              // Natural spoken leave command.
+              // Examples: "Fergie leave VC", "Fergie get out", "Fergie disconnect",
+              // "Fergie vete", "Fergie salte del voice chat".
+              if (isFergieLeaveRequest(transcript)) {
+                console.log(
+                  `AUTO NATURAL LEAVE REQUEST ✅ guild=${guildId} user=${member.user.tag}`
+                );
+
+                try {
+                  await textChannel.send("ugh fine. i'm leaving. 🙄");
+                } catch (error) {
+                  console.error("AUTO LEAVE TEXT ERROR:", error);
+                }
+
+                leaveVoiceForGuild(guildId);
+                return;
+              }
 
               const responseDecision =
                 shouldFergieRespond(
