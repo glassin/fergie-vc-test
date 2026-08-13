@@ -853,6 +853,31 @@ async function generateFergieSpeech(
     );
   }
 
+  // Keep normal Fergie on Flash v2.5.
+  // Switch to Eleven v3 only for explicit whisper cues.
+  const whisperPattern =
+    /(?:\*+\s*whispers?\s*\*+|\(\s*whispers?\s*\)|\[\s*whispers?\s*\])/gi;
+
+  const shouldWhisper =
+    whisperPattern.test(text || "");
+
+  whisperPattern.lastIndex = 0;
+
+  const ttsText = shouldWhisper
+    ? (text || "").replace(
+        whisperPattern,
+        "[whispers]"
+      )
+    : text;
+
+  const ttsModel = shouldWhisper
+    ? "eleven_v3"
+    : "eleven_flash_v2_5";
+
+  console.log(
+    `FERGIE TTS MODE: ${shouldWhisper ? "WHISPER (v3)" : "NORMAL (flash v2.5)"}`
+  );
+
   const response =
     await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=mp3_44100_128`,
@@ -870,10 +895,10 @@ async function generateFergieSpeech(
 
         body:
           JSON.stringify({
-            text: text,
+            text: ttsText,
 
             model_id:
-              "eleven_flash_v2_5",
+              ttsModel,
 
             voice_settings: {
               stability:
@@ -906,9 +931,7 @@ async function generateFergieSpeech(
       await response.arrayBuffer()
     );
 
-  if (
-    !audioBuffer.length
-  ) {
+  if (!audioBuffer.length) {
     throw new Error(
       "ElevenLabs returned empty TTS audio"
     );
