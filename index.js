@@ -725,7 +725,7 @@ async function checkFergieBrainHealth() {
 function isFergieAddressed(
   transcript
 ) {
-  return /\b(?:ferg(?:ie|i|y)?|bergy)\b/i.test(
+  return /\b(?:ferg(?:ie|i|y)?|berg(?:ie|y)|erg(?:ie|i))\b/i.test(
     transcript || ""
   );
 }
