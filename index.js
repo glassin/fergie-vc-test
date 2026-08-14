@@ -109,6 +109,8 @@ client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log("FERGIE NODE VC TEST READY ✅");
 
+  validateNaturalDjPlayParser();
+
   await checkFergieBrainHealth();
   await checkFergieDjHealth();
   await checkFergieDjTrackFetch();
@@ -448,7 +450,7 @@ function getNaturalDjPlayQuery(transcript) {
   // Keep this intentionally narrow for the first spoken-DJ checkpoint.
   // Examples: "Fergie play The Greatest", "Fergie, play Skinny".
   const match = text.match(
-    /\bferg(?:ie|i|y)?\b[\s,.:;!?-]*(?:please\s+)?play\s+(.+?)[\s.!?]*$/i
+    /\b(?:ferg(?:ie|i|y)?|erg(?:ie|i)|berg(?:ie|y))\b[\s,.:;!?-]*(?:please\s+)?plays?\s+(.+?)[\s.!?]*$/i
   );
 
   if (!match) {
@@ -460,6 +462,27 @@ function getNaturalDjPlayQuery(transcript) {
     .trim();
 
   return query || null;
+}
+
+function validateNaturalDjPlayParser() {
+  const cases = [
+    ["Fergie, play Skinny", "Skinny"],
+    ["Fergie plays Skinny", "Skinny"],
+    ["Ergie, play Skinny", "Skinny"],
+    ["Fergy play The Greatest", "The Greatest"],
+  ];
+
+  for (const [spoken, expected] of cases) {
+    const actual = getNaturalDjPlayQuery(spoken);
+
+    if (actual !== expected) {
+      throw new Error(
+        `Natural DJ parser self-check failed: ${JSON.stringify(spoken)} => ${JSON.stringify(actual)}`
+      );
+    }
+  }
+
+  console.log("FERGIE NATURAL DJ PARSER CHECK ✅");
 }
 
 // =========================
