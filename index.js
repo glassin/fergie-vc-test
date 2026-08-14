@@ -61,6 +61,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName("leave")
     .setDescription("Leave the voice channel"),
+
+  new SlashCommandBuilder()
+    .setName("djtest")
+    .setDescription("Play DJ Fergie test track 2 in the current VC"),
 ].map((command) => command.toJSON());
 
 client.once("ready", async () => {
@@ -178,6 +182,48 @@ client.on("interactionCreate", async (interaction) => {
     leaveVoiceForGuild(interaction.guild.id);
 
     await interaction.reply("Left VC.");
+
+    return;
+  }
+
+  // =========================
+  // /djtest - controlled Stage 3 playback test
+  // =========================
+  if (interaction.commandName === "djtest") {
+    const connection = getVoiceConnection(interaction.guild.id);
+
+    if (!connection) {
+      await interaction.reply({
+        content: "Fergie needs to be in VC first. Use /join.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.deferReply();
+
+    let trackFile = null;
+
+    try {
+      console.log(`FERGIE DJ PLAYBACK TEST START ▶️ guild=${interaction.guild.id} track=2`);
+      trackFile = await fetchFergieDjTrackToTemp(2);
+      await interaction.editReply("🎧 DJ Fergie test: playing **Billie Eilish — Skinny**.");
+      await playSpeechInVC(connection, trackFile);
+      trackFile = null; // playSpeechInVC owns/deletes the temp file after playback.
+      console.log(`FERGIE DJ PLAYBACK TEST COMPLETE ✅ guild=${interaction.guild.id} track=2`);
+    } catch (error) {
+      if (trackFile) {
+        try {
+          fs.unlinkSync(trackFile);
+        } catch {}
+      }
+
+      console.error("FERGIE DJ PLAYBACK TEST ❌", error);
+
+      try {
+        await interaction.editReply("❌ DJ Fergie test playback failed. Check the Railway logs.");
+      } catch {}
+    }
 
     return;
   }
@@ -833,6 +879,55 @@ async function checkFergieDjTrackFetch() {
     return false;
   }
 }
+
+// =========================
+// FETCH FERGIE DJ TRACK FOR VC PLAYBACK
+// =========================
+async function fetchFergieDjTrackToTemp(trackId) {
+  if (!FERGIE_DJ_URL) {
+    throw new Error("FERGIE_DJ_URL is missing");
+  }
+
+  if (!FERGIE_DJ_API_KEY) {
+    throw new Error("FERGIE_DJ_API_KEY is missing");
+  }
+
+  const response = await fetch(
+    `${FERGIE_DJ_URL}/track/${trackId}`,
+    {
+      method: "GET",
+      headers: {
+        "X-Fergie-DJ-Key": FERGIE_DJ_API_KEY,
+      },
+      signal: AbortSignal.timeout(30000),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Fergie DJ track fetch failed: ${response.status} ${errorText}`
+    );
+  }
+
+  const audioBuffer = Buffer.from(await response.arrayBuffer());
+
+  if (audioBuffer.length < 1024) {
+    throw new Error(
+      `Fergie DJ track fetch returned too little audio: ${audioBuffer.length} bytes`
+    );
+  }
+
+  const trackFile = `/tmp/fergie_dj_track_${trackId}_${Date.now()}.mp3`;
+  fs.writeFileSync(trackFile, audioBuffer);
+
+  console.log(
+    `FERGIE DJ PLAYBACK FETCH ✅ track=${trackId} bytes=${audioBuffer.length}`
+  );
+
+  return trackFile;
+}
+
 
 // =========================
 // DETECT FERGIE'S NAME
