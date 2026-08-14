@@ -23,6 +23,8 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 const FERGIE_BRAIN_URL = (process.env.FERGIE_BRAIN_URL || "").replace(/\/$/, "");
 const VC_BRIDGE_SECRET = process.env.VC_BRIDGE_SECRET;
+const FERGIE_DJ_URL = (process.env.FERGIE_DJ_URL || "").replace(/\/$/, "");
+const FERGIE_DJ_API_KEY = process.env.FERGIE_DJ_API_KEY || "";
 
 const VOICE_CHANCE_NORMAL = 0.05;
 const VOICE_CHANCE_DIRECT = 1.00;
@@ -66,6 +68,7 @@ client.once("ready", async () => {
   console.log("FERGIE NODE VC TEST READY ✅");
 
   await checkFergieBrainHealth();
+  await checkFergieDjHealth();
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
 
@@ -715,6 +718,69 @@ async function checkFergieBrainHealth() {
       error
     );
 
+    return false;
+  }
+}
+
+
+
+// =========================
+// FERGIE DJ HEALTH CHECK
+// =========================
+async function checkFergieDjHealth() {
+  if (!FERGIE_DJ_URL) {
+    console.warn(
+      "FERGIE DJ CONNECTION ⚪ FERGIE_DJ_URL is missing"
+    );
+    return false;
+  }
+
+  if (!FERGIE_DJ_API_KEY) {
+    console.warn(
+      "FERGIE DJ CONNECTION ⚪ FERGIE_DJ_API_KEY is missing"
+    );
+    return false;
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_DJ_URL}/crate/status`,
+      {
+        method: "GET",
+        headers: {
+          "X-Fergie-DJ-Key":
+            FERGIE_DJ_API_KEY,
+        },
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+
+    if (!response.ok) {
+      console.warn(
+        `FERGIE DJ CONNECTION ⚪ status=${response.status}`
+      );
+      return false;
+    }
+
+    const result = await response.json();
+
+    if (!result?.ok) {
+      console.warn(
+        `FERGIE DJ CONNECTION ⚪ invalid response=${JSON.stringify(result)}`
+      );
+      return false;
+    }
+
+    console.log(
+      `FERGIE DJ CONNECTION ✅ tracks=${result.tracks ?? "unknown"}`
+    );
+
+    return true;
+  } catch (error) {
+    console.warn(
+      "FERGIE DJ CONNECTION ⚪ offline/unreachable:",
+      error?.message || error
+    );
     return false;
   }
 }
