@@ -69,6 +69,7 @@ client.once("ready", async () => {
 
   await checkFergieBrainHealth();
   await checkFergieDjHealth();
+  await checkFergieDjTrackFetch();
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
 
@@ -779,6 +780,54 @@ async function checkFergieDjHealth() {
   } catch (error) {
     console.warn(
       "FERGIE DJ CONNECTION ⚪ offline/unreachable:",
+      error?.message || error
+    );
+    return false;
+  }
+}
+
+// =========================
+// FERGIE DJ TRACK FETCH CHECK
+// =========================
+async function checkFergieDjTrackFetch() {
+  if (!FERGIE_DJ_URL || !FERGIE_DJ_API_KEY) {
+    console.warn("FERGIE DJ TRACK FETCH ⚪ DJ configuration is missing");
+    return false;
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_DJ_URL}/track/2`,
+      {
+        method: "GET",
+        headers: {
+          "X-Fergie-DJ-Key": FERGIE_DJ_API_KEY,
+        },
+        signal: AbortSignal.timeout(15000),
+      }
+    );
+
+    if (!response.ok) {
+      console.warn(`FERGIE DJ TRACK FETCH ⚪ status=${response.status}`);
+      return false;
+    }
+
+    const contentType = response.headers.get("content-type") || "unknown";
+    const audio = await response.arrayBuffer();
+    const bytes = audio.byteLength;
+
+    if (bytes < 1024) {
+      console.warn(`FERGIE DJ TRACK FETCH ⚪ response too small: ${bytes} bytes`);
+      return false;
+    }
+
+    console.log(
+      `FERGIE DJ TRACK FETCH ✅ track=2 bytes=${bytes} content-type=${contentType}`
+    );
+    return true;
+  } catch (error) {
+    console.warn(
+      "FERGIE DJ TRACK FETCH ⚪ offline/unreachable:",
       error?.message || error
     );
     return false;
