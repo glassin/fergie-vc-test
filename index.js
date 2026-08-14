@@ -75,6 +75,16 @@ const commands = [
         .setDescription("Artist, song title, or album")
         .setRequired(true)
     ),
+
+  new SlashCommandBuilder()
+    .setName("djplay")
+    .setDescription("Search DJ Fergie's crate and play the best match")
+    .addStringOption((option) =>
+      option
+        .setName("query")
+        .setDescription("Artist, song title, or album")
+        .setRequired(true)
+    ),
 ].map((command) => command.toJSON());
 
 client.once("ready", async () => {
@@ -231,6 +241,66 @@ client.on("interactionCreate", async (interaction) => {
 
       try {
         await interaction.editReply("❌ DJ crate search failed. Check the Railway logs.");
+      } catch {}
+    }
+
+    return;
+  }
+
+  // =========================
+  // /djplay - Stage 5 search + playback
+  // =========================
+  if (interaction.commandName === "djplay") {
+    const connection = getVoiceConnection(interaction.guild.id);
+
+    if (!connection) {
+      await interaction.reply({
+        content: "Fergie needs to be in VC first. Use /join.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const query = interaction.options.getString("query", true).trim();
+    await interaction.deferReply();
+
+    let trackFile = null;
+
+    try {
+      const results = await searchFergieDjCrate(query);
+
+      if (!results.length) {
+        await interaction.editReply(`🎧 No DJ crate matches for **${query}**.`);
+        return;
+      }
+
+      const track = results[0];
+      const artist = track.artist || "Unknown artist";
+      const title = track.title || "Unknown title";
+
+      console.log(
+        `FERGIE DJ PLAY START ▶️ guild=${interaction.guild.id} query=${JSON.stringify(query)} track=${track.id}`
+      );
+
+      trackFile = await fetchFergieDjTrackToTemp(track.id);
+      await interaction.editReply(`🎧 DJ Fergie: playing **${artist} — ${title}**.`);
+      await playSpeechInVC(connection, trackFile);
+      trackFile = null; // playSpeechInVC owns/deletes the temp file after playback.
+
+      console.log(
+        `FERGIE DJ PLAY COMPLETE ✅ guild=${interaction.guild.id} track=${track.id}`
+      );
+    } catch (error) {
+      if (trackFile) {
+        try {
+          fs.unlinkSync(trackFile);
+        } catch {}
+      }
+
+      console.error("FERGIE DJ PLAY ❌", error);
+
+      try {
+        await interaction.editReply("❌ DJ playback failed. Check the Railway logs.");
       } catch {}
     }
 
