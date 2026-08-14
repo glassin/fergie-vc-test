@@ -1965,6 +1965,10 @@ function getDjState(guildId) {
     // Stage 8A autonomous continuation state.
     autonomousEnabled: true,
     lastTrackId: null,
+
+    // H.2 autonomous spoken DJ intro state.
+    pendingAutonomousIntroTrackId: null,
+    autonomousIntroInFlight: false,
   };
 
   player.on(AudioPlayerStatus.Playing, () => {
@@ -2117,11 +2121,121 @@ async function queueAutonomousDjTrack(guildId) {
     chosen
   );
 
+  state.pendingAutonomousIntroTrackId =
+    chosen.id;
+
   console.log(
     `FERGIE DJ AUTONOMOUS PICK 🤖 guild=${guildId} track=${chosen.id} title=${JSON.stringify(formatDjTrack(chosen))}`
   );
 
   return chosen;
+}
+
+function buildAutonomousDjIntro(track) {
+  const artist =
+    String(track?.artist || "").trim();
+
+  const title =
+    String(track?.title || "").trim();
+
+  if (
+    artist &&
+    artist.toLowerCase() !== "unknown artist"
+  ) {
+    return `Up next, ${title} by ${artist}.`;
+  }
+
+  return `Up next, ${title}.`;
+}
+
+async function speakAutonomousDjIntro(
+  guildId,
+  track
+) {
+  const state =
+    djStates.get(
+      guildId
+    );
+
+  if (
+    !state ||
+    !state.current ||
+    String(state.current.id) !==
+      String(track?.id) ||
+    !state.mixer ||
+    state.mixer.destroyed ||
+    state.autonomousIntroInFlight
+  ) {
+    return false;
+  }
+
+  state.autonomousIntroInFlight =
+    true;
+
+  let speechFile = null;
+
+  try {
+    const intro =
+      buildAutonomousDjIntro(
+        track
+      );
+
+    console.log(
+      `FERGIE DJ AUTO INTRO 🎙️ guild=${guildId} track=${track.id} text=${JSON.stringify(intro)}`
+    );
+
+    speechFile =
+      await generateFergieSpeech(
+        intro,
+        `dj_${guildId}`
+      );
+
+    const mixed =
+      await mixFergieSpeechIntoDj(
+        guildId,
+        speechFile
+      );
+
+    if (!mixed) {
+      cleanupDjTempFile(
+        speechFile
+      );
+
+      console.warn(
+        `FERGIE DJ AUTO INTRO ⚪ track ended before intro guild=${guildId} track=${track.id}`
+      );
+
+      return false;
+    }
+
+    console.log(
+      `FERGIE DJ AUTO INTRO COMPLETE ✅ guild=${guildId} track=${track.id}`
+    );
+
+    return true;
+  } catch (error) {
+    cleanupDjTempFile(
+      speechFile
+    );
+
+    console.error(
+      `FERGIE DJ AUTO INTRO ❌ guild=${guildId} track=${track?.id ?? "unknown"}`,
+      error
+    );
+
+    // Intro failure must never stop or skip the music.
+    return false;
+  } finally {
+    const latest =
+      djStates.get(
+        guildId
+      );
+
+    if (latest) {
+      latest.autonomousIntroInFlight =
+        false;
+    }
+  }
 }
 
 async function playNextDjTrack(guildId) {
@@ -2206,6 +2320,48 @@ async function playNextDjTrack(guildId) {
     );
 
     state.player.play(resource);
+
+    const shouldAutoIntro =
+      String(
+        state.pendingAutonomousIntroTrackId
+      ) === String(
+        track.id
+      );
+
+    if (shouldAutoIntro) {
+      state.pendingAutonomousIntroTrackId =
+        null;
+
+      // Give the new music stream a moment to become active, then speak
+      // through the proven H/7C single-player mixer. Never create a second
+      // Discord audio subscription for autonomous DJ speech.
+      setTimeout(() => {
+        const latest =
+          djStates.get(
+            guildId
+          );
+
+        if (
+          !latest ||
+          !latest.current ||
+          String(latest.current.id) !==
+            String(track.id)
+        ) {
+          return;
+        }
+
+        speakAutonomousDjIntro(
+          guildId,
+          track
+        ).catch((error) => {
+          console.error(
+            `FERGIE DJ AUTO INTRO TASK ❌ guild=${guildId} track=${track.id}`,
+            error
+          );
+        });
+      }, 900);
+    }
+
     return true;
   } catch (error) {
     if (decoderProcess) {
@@ -2253,6 +2409,7 @@ function stopDjForGuild(guildId, removeState = false) {
   const hadMusic = Boolean(state.current || state.queue.length || state.starting);
 
   state.queue.length = 0;
+  state.pendingAutonomousIntroTrackId = null;
   state.intentionallyStopping = Boolean(state.current);
 
   let stopTriggeredIdle = false;
