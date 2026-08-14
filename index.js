@@ -1904,6 +1904,10 @@ function getDjState(guildId) {
     intentionallyStopping: false,
     mixer: null,
     decoderProcess: null,
+
+    // Stage 8A autonomous continuation state.
+    autonomousEnabled: true,
+    lastTrackId: null,
   };
 
   player.on(AudioPlayerStatus.Playing, () => {
@@ -1913,9 +1917,15 @@ function getDjState(guildId) {
   });
 
   player.on(AudioPlayerStatus.Idle, () => {
+    const finishedTrack = state.current;
+
     cleanupDjTrackPipeline(
       state
     );
+
+    if (finishedTrack?.id != null) {
+      state.lastTrackId = finishedTrack.id;
+    }
 
     state.current = null;
 
@@ -1924,10 +1934,27 @@ function getDjState(guildId) {
       return;
     }
 
-    setImmediate(() => {
-      playNextDjTrack(guildId).catch((error) => {
-        console.error(`FERGIE DJ NEXT TRACK ❌ guild=${guildId}`, error);
-      });
+    setImmediate(async () => {
+      try {
+        if (
+          state.autonomousEnabled &&
+          state.queue.length === 0 &&
+          finishedTrack
+        ) {
+          await queueAutonomousDjTrack(
+            guildId
+          );
+        }
+
+        await playNextDjTrack(
+          guildId
+        );
+      } catch (error) {
+        console.error(
+          `FERGIE DJ NEXT TRACK ❌ guild=${guildId}`,
+          error
+        );
+      }
     });
   });
 
@@ -1949,6 +1976,61 @@ function getDjState(guildId) {
 
   djStates.set(guildId, state);
   return state;
+}
+
+async function queueAutonomousDjTrack(guildId) {
+  const state = getDjState(guildId);
+
+  if (
+    !state.autonomousEnabled ||
+    state.current ||
+    state.starting ||
+    state.queue.length
+  ) {
+    return null;
+  }
+
+  const crate = await searchFergieDjCrate("");
+
+  if (!Array.isArray(crate) || crate.length === 0) {
+    console.warn(
+      `FERGIE DJ AUTONOMOUS ⚪ crate empty guild=${guildId}`
+    );
+    return null;
+  }
+
+  const candidates =
+    crate.filter(
+      (track) =>
+        String(track?.id) !==
+        String(state.lastTrackId)
+    );
+
+  const pool =
+    candidates.length
+      ? candidates
+      : crate;
+
+  const chosen =
+    pool[
+      Math.floor(
+        Math.random() * pool.length
+      )
+    ];
+
+  if (!chosen) {
+    return null;
+  }
+
+  state.queue.push(
+    chosen
+  );
+
+  console.log(
+    `FERGIE DJ AUTONOMOUS PICK 🤖 guild=${guildId} track=${chosen.id} title=${JSON.stringify(formatDjTrack(chosen))}`
+  );
+
+  return chosen;
 }
 
 async function playNextDjTrack(guildId) {
@@ -2113,7 +2195,7 @@ function stopDjForGuild(guildId, removeState = false) {
     djStates.delete(guildId);
   }
 
-  console.log(`FERGIE DJ STOP ✅ guild=${guildId} clearQueue=true`);
+  console.log(`FERGIE DJ STOP ✅ guild=${guildId} clearQueue=true autonomousRestart=false`);
   return hadMusic;
 }
 
