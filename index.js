@@ -1969,6 +1969,7 @@ function getDjState(guildId) {
     // H.2 autonomous spoken DJ intro state.
     pendingAutonomousIntroTrackId: null,
     autonomousIntroInFlight: false,
+    previousTrack: null,
   };
 
   player.on(AudioPlayerStatus.Playing, () => {
@@ -1986,6 +1987,9 @@ function getDjState(guildId) {
 
     if (finishedTrack?.id != null) {
       state.lastTrackId = finishedTrack.id;
+      state.previousTrack = {
+        ...finishedTrack,
+      };
     }
 
     state.current = null;
@@ -2131,34 +2135,39 @@ async function queueAutonomousDjTrack(guildId) {
   return chosen;
 }
 
-function buildAutonomousDjIntro(track) {
-  const artist =
-    String(track?.artist || "").trim();
-
-  const title =
-    String(track?.title || "").trim();
-
+function buildAutonomousDjIntro(
+  track,
+  previousTrack
+) {
+  const artist = String(track?.artist || "").trim();
+  const title = String(track?.title || "").trim();
   const hasArtist =
     artist &&
-    artist.toLowerCase() !==
-      "unknown artist";
-
+    artist.toLowerCase() !== "unknown artist";
   const trackLabel =
-    hasArtist
-      ? `${title} by ${artist}`
-      : title;
+    hasArtist ? `${title} by ${artist}` : title;
 
-  // H.2.1: keep autonomous DJ chatter short and varied.
-  // Some transitions intentionally have no speech so Fergie does not
-  // become an announcement machine between every song.
-  const roll =
-    Math.random();
+  const previousArtist =
+    String(previousTrack?.artist || "").trim();
+  const previousTitle =
+    String(previousTrack?.title || "").trim();
+  const hasPrevious = Boolean(previousTitle);
+  const previousHasArtist =
+    previousArtist &&
+    previousArtist.toLowerCase() !== "unknown artist";
+  const previousLabel =
+    hasPrevious
+      ? (previousHasArtist
+          ? `${previousTitle} by ${previousArtist}`
+          : previousTitle)
+      : "";
 
-  if (roll < 0.22) {
+  // Preserve H.2.1 restraint: sometimes Fergie lets the music speak.
+  if (Math.random() < 0.22) {
     return null;
   }
 
-  const intros = [
+  const simpleIntros = [
     `Up next, ${trackLabel}.`,
     `Alright, next one. ${trackLabel}.`,
     `Fine, we're doing ${trackLabel}.`,
@@ -2168,13 +2177,26 @@ function buildAutonomousDjIntro(track) {
     `Here. ${trackLabel}. You're welcome.`,
   ];
 
-  return intros[
-    Math.floor(
-      Math.random() *
-        intros.length
-    )
+  // H.2.2: when possible, sometimes acknowledge the song that just ended.
+  if (hasPrevious && Math.random() < 0.60) {
+    const contextualIntros = [
+      `That was ${previousLabel}. Now we're doing ${trackLabel}.`,
+      `${previousLabel} is done. Next up, ${trackLabel}.`,
+      `Okay, enough of ${previousLabel}. Here's ${trackLabel}.`,
+      `From ${previousLabel} into ${trackLabel}. Keep up.`,
+      `We survived ${previousLabel}. Now it's ${trackLabel}.`,
+    ];
+
+    return contextualIntros[
+      Math.floor(Math.random() * contextualIntros.length)
+    ];
+  }
+
+  return simpleIntros[
+    Math.floor(Math.random() * simpleIntros.length)
   ];
 }
+
 
 async function speakAutonomousDjIntro(
   guildId,
@@ -2205,7 +2227,8 @@ async function speakAutonomousDjIntro(
   try {
     const intro =
       buildAutonomousDjIntro(
-        track
+        track,
+        state.previousTrack
       );
 
     if (!intro) {
@@ -2446,6 +2469,7 @@ function stopDjForGuild(guildId, removeState = false) {
 
   state.queue.length = 0;
   state.pendingAutonomousIntroTrackId = null;
+  state.previousTrack = null;
   state.intentionallyStopping = Boolean(state.current);
 
   let stopTriggeredIdle = false;
