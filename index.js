@@ -113,6 +113,7 @@ client.once("ready", async () => {
 
   await checkFergieBrainHealth();
   await checkFergieDjHealth();
+  await checkFergieDjCrateList();
   await checkFergieDjTrackFetch();
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -1325,6 +1326,62 @@ async function checkFergieDjHealth() {
   }
 }
 
+
+async function checkFergieDjCrateList() {
+  if (!FERGIE_DJ_URL || !FERGIE_DJ_API_KEY) {
+    console.warn("FERGIE DJ CRATE LIST ⚪ DJ configuration is missing");
+    return false;
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_DJ_URL}/crate/list`,
+      {
+        method: "GET",
+        headers: {
+          "X-Fergie-DJ-Key":
+            FERGIE_DJ_API_KEY,
+        },
+        signal:
+          AbortSignal.timeout(10000),
+      }
+    );
+
+    if (!response.ok) {
+      console.warn(
+        `FERGIE DJ CRATE LIST ⚪ status=${response.status}`
+      );
+      return false;
+    }
+
+    const result =
+      await response.json();
+
+    if (
+      !result?.ok ||
+      !Array.isArray(result?.tracks)
+    ) {
+      console.warn(
+        `FERGIE DJ CRATE LIST ⚪ invalid response=${JSON.stringify(result)}`
+      );
+      return false;
+    }
+
+    console.log(
+      `FERGIE DJ CRATE LIST ✅ tracks=${result.tracks.length}`
+    );
+
+    return true;
+  } catch (error) {
+    console.warn(
+      "FERGIE DJ CRATE LIST ⚪ offline/unreachable:",
+      error?.message || error
+    );
+    return false;
+  }
+}
+
+
 // =========================
 // FERGIE DJ TRACK FETCH CHECK
 // =========================
@@ -1990,11 +2047,11 @@ async function queueAutonomousDjTrack(guildId) {
     return null;
   }
 
-  // The normal search helper intentionally rejects an empty query.
-  // For autonomous continuation, ask the DJ service for its crate status,
-  // which is the endpoint already used by our proven startup health check.
+  // Stage 8A.2: autonomous continuation uses the dedicated crate-list
+  // endpoint from the local DJ server. This returns real track objects and
+  // avoids guessing IDs or abusing the search endpoint.
   const response = await fetch(
-    `${FERGIE_DJ_URL}/crate/status`,
+    `${FERGIE_DJ_URL}/crate/list`,
     {
       method: "GET",
       headers: {
@@ -2007,28 +2064,28 @@ async function queueAutonomousDjTrack(guildId) {
   );
 
   if (!response.ok) {
+    const errorText =
+      await response.text();
+
     throw new Error(
-      `Fergie DJ autonomous crate status failed: ${response.status}`
+      `Fergie DJ autonomous crate list failed: ${response.status} ${errorText}`
     );
   }
 
   const result =
     await response.json();
 
-  // Different server revisions may call the actual array tracks, results,
-  // or crate. Accept only a real array; never invent track IDs.
   const crate =
     Array.isArray(result?.tracks)
       ? result.tracks
-      : Array.isArray(result?.results)
-        ? result.results
-        : Array.isArray(result?.crate)
-          ? result.crate
-          : null;
+      : [];
 
-  if (!crate || crate.length === 0) {
+  if (
+    !result?.ok ||
+    crate.length === 0
+  ) {
     console.warn(
-      `FERGIE DJ AUTONOMOUS ⚪ crate list unavailable guild=${guildId} keys=${Object.keys(result || {}).join(",")}`
+      `FERGIE DJ AUTONOMOUS ⚪ crate list empty/unavailable guild=${guildId}`
     );
     return null;
   }
