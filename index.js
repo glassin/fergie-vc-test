@@ -892,6 +892,23 @@ function startAutoListening(
                 return;
               }
 
+              // Stage 7B.1 safety: never let normal Fergie TTS steal the
+              // Discord voice connection while DJ music is actively playing.
+              // Keep the normal text reply, but suppress spoken TTS until the
+              // DJ track has stopped. A later stage can add proper duck/resume.
+              const activeDjState = djStates.get(guildId);
+              const djMusicActive = Boolean(
+                activeDjState &&
+                (activeDjState.current || activeDjState.starting)
+              );
+
+              if (djMusicActive) {
+                console.log(
+                  `AUTO VOICE SUPPRESSED 🎧 DJ music active guild=${guildId}`
+                );
+                return;
+              }
+
               try {
                 console.log(
                   "AUTO generating Fergie voice..."
