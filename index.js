@@ -892,24 +892,40 @@ function startAutoListening(
                 return;
               }
 
-              // Stage 7B.1 safety: never let normal Fergie TTS steal the
-              // Discord voice connection while DJ music is actively playing.
-              // Keep the normal text reply, but suppress spoken TTS until the
-              // DJ track has stopped. A later stage can add proper duck/resume.
+              // Stage 7C: if DJ music is active, duck the persistent music
+              // resource while Fergie speaks, then restore full volume.
+              // The DJ player itself is never stopped, so the song keeps its
+              // position underneath her voice.
               const activeDjState = djStates.get(guildId);
               const djMusicActive = Boolean(
                 activeDjState &&
-                (activeDjState.current || activeDjState.starting)
+                activeDjState.current &&
+                activeDjState.player?.state?.resource
               );
 
-              if (djMusicActive) {
-                console.log(
-                  `AUTO VOICE SUPPRESSED 🎧 DJ music active guild=${guildId}`
-                );
-                return;
-              }
+              let djVolume = null;
+              let djOriginalVolume = 1.0;
 
               try {
+                if (djMusicActive) {
+                  djVolume = activeDjState.player.state.resource.volume || null;
+
+                  if (djVolume) {
+                    if (Number.isFinite(djVolume.volume)) {
+                      djOriginalVolume = djVolume.volume;
+                    }
+
+                    djVolume.setVolume(0.18);
+                    console.log(
+                      `AUTO DJ DUCK 🔉 guild=${guildId} volume=0.18`
+                    );
+                  } else {
+                    console.warn(
+                      `AUTO DJ DUCK ⚪ inline volume unavailable guild=${guildId}`
+                    );
+                  }
+                }
+
                 console.log(
                   "AUTO generating Fergie voice..."
                 );
@@ -938,6 +954,20 @@ function startAutoListening(
                   "AUTO TTS/playback error:",
                   error
                 );
+              } finally {
+                if (djVolume) {
+                  try {
+                    djVolume.setVolume(djOriginalVolume);
+                    console.log(
+                      `AUTO DJ RESTORE 🔊 guild=${guildId} volume=${djOriginalVolume}`
+                    );
+                  } catch (error) {
+                    console.error(
+                      "AUTO DJ RESTORE ERROR:",
+                      error
+                    );
+                  }
+                }
               }
             } catch (error) {
               console.error(
@@ -1440,7 +1470,13 @@ async function playNextDjTrack(guildId) {
   try {
     trackFile = await fetchFergieDjTrackToTemp(track.id);
 
-    const resource = createAudioResource(trackFile);
+    const resource = createAudioResource(trackFile, {
+      inlineVolume: true,
+    });
+
+    // Stage 7C: keep an inline volume transformer on the persistent DJ
+    // resource so Fergie can duck the song without stopping/restarting it.
+    resource.volume?.setVolume(1.0);
     const subscription = connection.subscribe(state.player);
 
     if (!subscription) {
