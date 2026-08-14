@@ -42,6 +42,9 @@ const lastUnsolicitedReplyAtByGuild = new Map();
 const autoListenStates = new Map();
 const autoProcessingGuilds = new Set();
 
+// Stage 6: persistent DJ playback state per Discord guild.
+const djStates = new Map();
+
 if (!TOKEN) {
   throw new Error("DISCORD_TOKEN environment variable is missing");
 }
@@ -78,13 +81,25 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("djplay")
-    .setDescription("Search DJ Fergie's crate and play the best match")
+    .setDescription("Search DJ Fergie's crate and play or queue the best match")
     .addStringOption((option) =>
       option
         .setName("query")
         .setDescription("Artist, song title, or album")
         .setRequired(true)
     ),
+
+  new SlashCommandBuilder()
+    .setName("djqueue")
+    .setDescription("Show DJ Fergie's current song and queue"),
+
+  new SlashCommandBuilder()
+    .setName("djskip")
+    .setDescription("Skip DJ Fergie's current song"),
+
+  new SlashCommandBuilder()
+    .setName("djstop")
+    .setDescription("Stop DJ Fergie and clear the queue"),
 ].map((command) => command.toJSON());
 
 client.once("ready", async () => {
@@ -112,6 +127,8 @@ client.once("ready", async () => {
 
 function leaveVoiceForGuild(guildId) {
   const connection = getVoiceConnection(guildId);
+
+  stopDjForGuild(guildId, true);
 
   if (connection) {
     connection.destroy();
@@ -248,7 +265,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   // =========================
-  // /djplay - Stage 5 search + playback
+  // /djplay - Stage 6 search + queue-aware playback
   // =========================
   if (interaction.commandName === "djplay") {
     const connection = getVoiceConnection(interaction.guild.id);
@@ -264,8 +281,6 @@ client.on("interactionCreate", async (interaction) => {
     const query = interaction.options.getString("query", true).trim();
     await interaction.deferReply();
 
-    let trackFile = null;
-
     try {
       const results = await searchFergieDjCrate(query);
 
@@ -275,35 +290,102 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const track = results[0];
-      const artist = track.artist || "Unknown artist";
-      const title = track.title || "Unknown title";
+      const state = getDjState(interaction.guild.id);
+      const wasIdle = !state.current && !state.starting && state.queue.length === 0;
+
+      state.queue.push(track);
 
       console.log(
-        `FERGIE DJ PLAY START ▶️ guild=${interaction.guild.id} query=${JSON.stringify(query)} track=${track.id}`
+        `FERGIE DJ QUEUE ADD ✅ guild=${interaction.guild.id} query=${JSON.stringify(query)} track=${track.id} queue=${state.queue.length}`
       );
 
-      trackFile = await fetchFergieDjTrackToTemp(track.id);
-      await interaction.editReply(`🎧 DJ Fergie: playing **${artist} — ${title}**.`);
-      await playSpeechInVC(connection, trackFile);
-      trackFile = null; // playSpeechInVC owns/deletes the temp file after playback.
-
-      console.log(
-        `FERGIE DJ PLAY COMPLETE ✅ guild=${interaction.guild.id} track=${track.id}`
-      );
-    } catch (error) {
-      if (trackFile) {
-        try {
-          fs.unlinkSync(trackFile);
-        } catch {}
+      if (wasIdle) {
+        await playNextDjTrack(interaction.guild.id);
       }
 
-      console.error("FERGIE DJ PLAY ❌", error);
+      const artist = track.artist || "Unknown artist";
+      const title = track.title || "Unknown title";
+      const nowPlayingThisTrack = state.current && String(state.current.id) === String(track.id);
+
+      if (nowPlayingThisTrack) {
+        await interaction.editReply(`🎧 DJ Fergie: playing **${artist} — ${title}**.`);
+      } else {
+        const position = state.queue.findIndex(
+          (queued) => String(queued.id) === String(track.id)
+        ) + 1;
+        await interaction.editReply(
+          `🎧 queued **${artist} — ${title}**${position > 0 ? ` (position ${position})` : ""}.`
+        );
+      }
+    } catch (error) {
+      console.error("FERGIE DJ PLAY/QUEUE ❌", error);
 
       try {
         await interaction.editReply("❌ DJ playback failed. Check the Railway logs.");
       } catch {}
     }
 
+    return;
+  }
+
+  // =========================
+  // /djqueue - Stage 6 queue status
+  // =========================
+  if (interaction.commandName === "djqueue") {
+    const state = djStates.get(interaction.guild.id);
+
+    if (!state || (!state.current && state.queue.length === 0)) {
+      await interaction.reply("🎧 DJ Fergie's queue is empty.");
+      return;
+    }
+
+    const lines = [];
+
+    if (state.current) {
+      lines.push(`**Now:** ${formatDjTrack(state.current)}`);
+    }
+
+    if (state.queue.length) {
+      lines.push(
+        "**Up next:**\n" +
+        state.queue.slice(0, 10).map((track, index) =>
+          `${index + 1}. ${formatDjTrack(track)}`
+        ).join("\n")
+      );
+    }
+
+    await interaction.reply(`🎧 **DJ Fergie queue**\n${lines.join("\n")}`);
+    return;
+  }
+
+  // =========================
+  // /djskip - Stage 6 skip current song
+  // =========================
+  if (interaction.commandName === "djskip") {
+    const state = djStates.get(interaction.guild.id);
+
+    if (!state || !state.current) {
+      await interaction.reply("🎧 nothing is playing to skip.");
+      return;
+    }
+
+    const skipped = formatDjTrack(state.current);
+    state.player.stop(true);
+    await interaction.reply(`⏭️ skipped **${skipped}**.`);
+    return;
+  }
+
+  // =========================
+  // /djstop - Stage 6 stop + clear queue
+  // =========================
+  if (interaction.commandName === "djstop") {
+    const hadMusic = stopDjForGuild(interaction.guild.id, false);
+
+    await interaction.reply(
+      hadMusic
+        ? "⏹️ DJ Fergie stopped. queue cleared."
+        : "🎧 DJ Fergie isn't playing anything."
+    );
     return;
   }
 
@@ -999,6 +1081,200 @@ async function checkFergieDjTrackFetch() {
     );
     return false;
   }
+}
+
+// =========================
+// STAGE 6 DJ QUEUE / PLAYER STATE
+// =========================
+function formatDjTrack(track) {
+  const artist = track?.artist || "Unknown artist";
+  const title = track?.title || "Unknown title";
+  return `${artist} — ${title}`;
+}
+
+function cleanupDjTempFile(filePath) {
+  if (!filePath) {
+    return;
+  }
+
+  try {
+    fs.unlinkSync(filePath);
+  } catch {}
+}
+
+function getDjState(guildId) {
+  let state = djStates.get(guildId);
+
+  if (state) {
+    return state;
+  }
+
+  const player = createAudioPlayer();
+
+  state = {
+    player,
+    subscription: null,
+    queue: [],
+    current: null,
+    currentFile: null,
+    starting: false,
+    intentionallyStopping: false,
+  };
+
+  player.on(AudioPlayerStatus.Playing, () => {
+    console.log(
+      `FERGIE DJ PLAYING 🔊 guild=${guildId} track=${state.current?.id ?? "unknown"}`
+    );
+  });
+
+  player.on(AudioPlayerStatus.Idle, () => {
+    cleanupDjTempFile(state.currentFile);
+    state.currentFile = null;
+    state.current = null;
+
+    if (state.intentionallyStopping) {
+      state.intentionallyStopping = false;
+      return;
+    }
+
+    setImmediate(() => {
+      playNextDjTrack(guildId).catch((error) => {
+        console.error(`FERGIE DJ NEXT TRACK ❌ guild=${guildId}`, error);
+      });
+    });
+  });
+
+  player.on("error", (error) => {
+    console.error(`FERGIE DJ PLAYER ERROR ❌ guild=${guildId}`, error);
+
+    cleanupDjTempFile(state.currentFile);
+    state.currentFile = null;
+    state.current = null;
+
+    setImmediate(() => {
+      playNextDjTrack(guildId).catch((nextError) => {
+        console.error(`FERGIE DJ RECOVERY ❌ guild=${guildId}`, nextError);
+      });
+    });
+  });
+
+  djStates.set(guildId, state);
+  return state;
+}
+
+async function playNextDjTrack(guildId) {
+  const state = getDjState(guildId);
+
+  if (state.starting || state.current) {
+    return false;
+  }
+
+  if (!state.queue.length) {
+    console.log(`FERGIE DJ QUEUE EMPTY ✅ guild=${guildId}`);
+    return false;
+  }
+
+  const connection = getVoiceConnection(guildId);
+
+  if (!connection) {
+    console.warn(`FERGIE DJ NEXT TRACK ⚪ no VC connection guild=${guildId}`);
+    return false;
+  }
+
+  state.starting = true;
+  const track = state.queue.shift();
+  let trackFile = null;
+
+  try {
+    trackFile = await fetchFergieDjTrackToTemp(track.id);
+
+    const resource = createAudioResource(trackFile);
+    const subscription = connection.subscribe(state.player);
+
+    if (!subscription) {
+      throw new Error("Could not subscribe DJ player to voice connection");
+    }
+
+    if (state.subscription && state.subscription !== subscription) {
+      try {
+        state.subscription.unsubscribe();
+      } catch {}
+    }
+
+    state.subscription = subscription;
+    state.current = track;
+    state.currentFile = trackFile;
+    trackFile = null;
+
+    console.log(
+      `FERGIE DJ START ▶️ guild=${guildId} track=${track.id} title=${JSON.stringify(formatDjTrack(track))}`
+    );
+
+    state.player.play(resource);
+    return true;
+  } catch (error) {
+    cleanupDjTempFile(trackFile);
+    console.error(`FERGIE DJ START ❌ guild=${guildId} track=${track?.id ?? "unknown"}`, error);
+
+    state.current = null;
+    state.currentFile = null;
+
+    if (state.queue.length) {
+      setImmediate(() => {
+        playNextDjTrack(guildId).catch((nextError) => {
+          console.error(`FERGIE DJ NEXT TRACK AFTER FAILURE ❌ guild=${guildId}`, nextError);
+        });
+      });
+    }
+
+    throw error;
+  } finally {
+    state.starting = false;
+  }
+}
+
+function stopDjForGuild(guildId, removeState = false) {
+  const state = djStates.get(guildId);
+
+  if (!state) {
+    return false;
+  }
+
+  const hadMusic = Boolean(state.current || state.queue.length || state.starting);
+
+  state.queue.length = 0;
+  state.intentionallyStopping = Boolean(state.current);
+
+  let stopTriggeredIdle = false;
+
+  if (state.player) {
+    try {
+      stopTriggeredIdle = state.player.stop(true);
+    } catch {}
+  }
+
+  if (!stopTriggeredIdle) {
+    state.intentionallyStopping = false;
+  }
+
+  cleanupDjTempFile(state.currentFile);
+  state.currentFile = null;
+  state.current = null;
+  state.starting = false;
+
+  if (state.subscription) {
+    try {
+      state.subscription.unsubscribe();
+    } catch {}
+    state.subscription = null;
+  }
+
+  if (removeState) {
+    djStates.delete(guildId);
+  }
+
+  console.log(`FERGIE DJ STOP ✅ guild=${guildId} clearQueue=true`);
+  return hadMusic;
 }
 
 // =========================
