@@ -65,6 +65,16 @@ const commands = [
   new SlashCommandBuilder()
     .setName("djtest")
     .setDescription("Play DJ Fergie test track 2 in the current VC"),
+
+  new SlashCommandBuilder()
+    .setName("djsearch")
+    .setDescription("Search DJ Fergie's local music crate")
+    .addStringOption((option) =>
+      option
+        .setName("query")
+        .setDescription("Artist, song title, or album")
+        .setRequired(true)
+    ),
 ].map((command) => command.toJSON());
 
 client.once("ready", async () => {
@@ -182,6 +192,47 @@ client.on("interactionCreate", async (interaction) => {
     leaveVoiceForGuild(interaction.guild.id);
 
     await interaction.reply("Left VC.");
+
+    return;
+  }
+
+  // =========================
+  // /djsearch - Stage 4 crate search test (no playback)
+  // =========================
+  if (interaction.commandName === "djsearch") {
+    const query = interaction.options.getString("query", true).trim();
+
+    await interaction.deferReply();
+
+    try {
+      const results = await searchFergieDjCrate(query);
+
+      if (!results.length) {
+        await interaction.editReply(`🎧 No DJ crate matches for **${query}**.`);
+        return;
+      }
+
+      const lines = results.slice(0, 10).map((track, index) => {
+        const artist = track.artist || "Unknown artist";
+        const title = track.title || "Unknown title";
+        const album = track.album ? ` — ${track.album}` : "";
+        return `${index + 1}. **${artist} — ${title}**${album} (track ${track.id})`;
+      });
+
+      await interaction.editReply(
+        `🎧 DJ crate search for **${query}** (${results.length} match${results.length === 1 ? "" : "es"}):\n${lines.join("\n")}`
+      );
+
+      console.log(
+        `FERGIE DJ SEARCH ✅ query=${JSON.stringify(query)} matches=${results.length}`
+      );
+    } catch (error) {
+      console.error("FERGIE DJ SEARCH ❌", error);
+
+      try {
+        await interaction.editReply("❌ DJ crate search failed. Check the Railway logs.");
+      } catch {}
+    }
 
     return;
   }
@@ -879,6 +930,54 @@ async function checkFergieDjTrackFetch() {
     return false;
   }
 }
+
+// =========================
+// SEARCH FERGIE DJ CRATE
+// =========================
+async function searchFergieDjCrate(query) {
+  if (!FERGIE_DJ_URL) {
+    throw new Error("FERGIE_DJ_URL is missing");
+  }
+
+  if (!FERGIE_DJ_API_KEY) {
+    throw new Error("FERGIE_DJ_API_KEY is missing");
+  }
+
+  const cleanQuery = String(query || "").trim();
+
+  if (!cleanQuery) {
+    return [];
+  }
+
+  const response = await fetch(
+    `${FERGIE_DJ_URL}/crate/search?q=${encodeURIComponent(cleanQuery)}`,
+    {
+      method: "GET",
+      headers: {
+        "X-Fergie-DJ-Key": FERGIE_DJ_API_KEY,
+      },
+      signal: AbortSignal.timeout(10000),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Fergie DJ crate search failed: ${response.status} ${errorText}`
+    );
+  }
+
+  const result = await response.json();
+
+  if (!result?.ok || !Array.isArray(result.results)) {
+    throw new Error(
+      `Fergie DJ crate search returned an invalid response: ${JSON.stringify(result)}`
+    );
+  }
+
+  return result.results;
+}
+
 
 // =========================
 // FETCH FERGIE DJ TRACK FOR VC PLAYBACK
