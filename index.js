@@ -1990,11 +1990,45 @@ async function queueAutonomousDjTrack(guildId) {
     return null;
   }
 
-  const crate = await searchFergieDjCrate("");
+  // The normal search helper intentionally rejects an empty query.
+  // For autonomous continuation, ask the DJ service for its crate status,
+  // which is the endpoint already used by our proven startup health check.
+  const response = await fetch(
+    `${FERGIE_DJ_URL}/crate/status`,
+    {
+      method: "GET",
+      headers: {
+        "X-Fergie-DJ-Key":
+          FERGIE_DJ_API_KEY,
+      },
+      signal:
+        AbortSignal.timeout(10000),
+    }
+  );
 
-  if (!Array.isArray(crate) || crate.length === 0) {
+  if (!response.ok) {
+    throw new Error(
+      `Fergie DJ autonomous crate status failed: ${response.status}`
+    );
+  }
+
+  const result =
+    await response.json();
+
+  // Different server revisions may call the actual array tracks, results,
+  // or crate. Accept only a real array; never invent track IDs.
+  const crate =
+    Array.isArray(result?.tracks)
+      ? result.tracks
+      : Array.isArray(result?.results)
+        ? result.results
+        : Array.isArray(result?.crate)
+          ? result.crate
+          : null;
+
+  if (!crate || crate.length === 0) {
     console.warn(
-      `FERGIE DJ AUTONOMOUS ⚪ crate empty guild=${guildId}`
+      `FERGIE DJ AUTONOMOUS ⚪ crate list unavailable guild=${guildId} keys=${Object.keys(result || {}).join(",")}`
     );
     return null;
   }
