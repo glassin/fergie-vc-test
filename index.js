@@ -13,10 +13,13 @@ const {
   createAudioPlayer,
   createAudioResource,
   AudioPlayerStatus,
+  StreamType,
 } = require("@discordjs/voice");
 
 const prism = require("prism-media");
 const fs = require("fs");
+const { spawn } = require("child_process");
+const { Transform } = require("stream");
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -892,22 +895,17 @@ function startAutoListening(
                 return;
               }
 
-              // Stage 7B.1 safety: never let normal Fergie TTS steal the
-              // Discord voice connection while DJ music is actively playing.
-              // Keep the normal text reply, but suppress spoken TTS until the
-              // DJ track has stopped. A later stage can add proper duck/resume.
+              // Stage 7C.2: while DJ music is active, generate Fergie's normal
+              // TTS but inject the decoded speech PCM into the SAME persistent DJ
+              // mixer/player. This avoids subscribing a second player and lets the
+              // song continue underneath her voice.
               const activeDjState = djStates.get(guildId);
               const djMusicActive = Boolean(
                 activeDjState &&
-                (activeDjState.current || activeDjState.starting)
+                activeDjState.current &&
+                activeDjState.mixer &&
+                !activeDjState.mixer.destroyed
               );
-
-              if (djMusicActive) {
-                console.log(
-                  `AUTO VOICE SUPPRESSED 🎧 DJ music active guild=${guildId}`
-                );
-                return;
-              }
 
               try {
                 console.log(
@@ -920,10 +918,27 @@ function startAutoListening(
                     userId
                   );
 
-                await playSpeechInVC(
-                  connection,
-                  speechFile
-                );
+                if (djMusicActive) {
+                  const mixed =
+                    await mixFergieSpeechIntoDj(
+                      guildId,
+                      speechFile
+                    );
+
+                  if (!mixed) {
+                    // The song ended while speech was being prepared. At that
+                    // point the DJ subscription is gone, so normal TTS is safe.
+                    await playSpeechInVC(
+                      connection,
+                      speechFile
+                    );
+                  }
+                } else {
+                  await playSpeechInVC(
+                    connection,
+                    speechFile
+                  );
+                }
 
                 lastVoiceReplyAtByGuild.set(
                   guildId,
@@ -1336,8 +1351,203 @@ async function checkFergieDjTrackFetch() {
 }
 
 // =========================
-// STAGE 6 DJ QUEUE / PLAYER STATE
+// STAGE 7C.2 SINGLE-PLAYER DJ MIXER
 // =========================
+// Discord voice connections effectively receive one subscribed audio player.
+// To let Fergie speak without stealing the DJ subscription, music and TTS are
+// mixed here as 48 kHz stereo s16le PCM and sent through the SAME DJ player.
+//
+// Music remains at full volume normally. While TTS samples are present, music
+// is ducked to 18% and Fergie's voice is mixed over it. The music decoder never
+// stops, so the track keeps its position underneath her speech.
+
+const DJ_MUSIC_DUCK_VOLUME = 0.18;
+const DJ_SPEECH_VOLUME = 1.0;
+
+function clampPcm16(value) {
+  if (value > 32767) {
+    return 32767;
+  }
+
+  if (value < -32768) {
+    return -32768;
+  }
+
+  return Math.round(value);
+}
+
+class FergieDjMixer extends Transform {
+  constructor(guildId) {
+    super();
+
+    this.guildId = guildId;
+    this.speechQueue = [];
+    this.musicRemainder = Buffer.alloc(0);
+  }
+
+  hasSpeech() {
+    return this.speechQueue.length > 0;
+  }
+
+  enqueueSpeech(pcmBuffer) {
+    if (!Buffer.isBuffer(pcmBuffer) || pcmBuffer.length < 2) {
+      return Promise.reject(
+        new Error("Fergie DJ mixer received empty speech PCM")
+      );
+    }
+
+    return new Promise((resolve, reject) => {
+      this.speechQueue.push({
+        buffer: pcmBuffer,
+        offset: 0,
+        resolve,
+        reject,
+      });
+
+      console.log(
+        `FERGIE DJ MIX SPEECH QUEUED 🗣️ guild=${this.guildId} bytes=${pcmBuffer.length}`
+      );
+    });
+  }
+
+  _finishSpeechSegment(segment) {
+    if (!segment) {
+      return;
+    }
+
+    try {
+      segment.resolve();
+    } catch {}
+  }
+
+  _rejectQueuedSpeech(error) {
+    while (this.speechQueue.length) {
+      const segment = this.speechQueue.shift();
+
+      try {
+        segment.reject(error);
+      } catch {}
+    }
+  }
+
+  _mixPcm(musicBuffer) {
+    const output = Buffer.allocUnsafe(musicBuffer.length);
+
+    for (let offset = 0; offset + 1 < musicBuffer.length; offset += 2) {
+      const musicSample = musicBuffer.readInt16LE(offset);
+      let mixedSample = musicSample;
+
+      if (this.speechQueue.length) {
+        const segment = this.speechQueue[0];
+
+        if (segment.offset + 1 < segment.buffer.length) {
+          const speechSample =
+            segment.buffer.readInt16LE(segment.offset);
+
+          segment.offset += 2;
+
+          mixedSample = clampPcm16(
+            (musicSample * DJ_MUSIC_DUCK_VOLUME) +
+            (speechSample * DJ_SPEECH_VOLUME)
+          );
+        }
+
+        if (segment.offset >= segment.buffer.length) {
+          this.speechQueue.shift();
+          this._finishSpeechSegment(segment);
+
+          console.log(
+            `FERGIE DJ MIX SPEECH COMPLETE ✅ guild=${this.guildId}`
+          );
+        }
+      }
+
+      output.writeInt16LE(mixedSample, offset);
+    }
+
+    return output;
+  }
+
+  _transform(chunk, encoding, callback) {
+    try {
+      let pcm = Buffer.from(chunk);
+
+      if (this.musicRemainder.length) {
+        pcm = Buffer.concat([
+          this.musicRemainder,
+          pcm,
+        ]);
+
+        this.musicRemainder = Buffer.alloc(0);
+      }
+
+      // s16le samples are 2 bytes. Preserve a rare split byte for the next
+      // transform call so sample boundaries can never be corrupted.
+      if (pcm.length % 2 !== 0) {
+        this.musicRemainder =
+          Buffer.from(
+            pcm.subarray(
+              pcm.length - 1
+            )
+          );
+
+        pcm =
+          pcm.subarray(
+            0,
+            pcm.length - 1
+          );
+      }
+
+      if (pcm.length) {
+        this.push(
+          this._mixPcm(pcm)
+        );
+      }
+
+      callback();
+    } catch (error) {
+      callback(error);
+    }
+  }
+
+  _flush(callback) {
+    try {
+      // If the song ends while Fergie is still speaking, finish her remaining
+      // speech over silence before the resource goes Idle.
+      while (this.speechQueue.length) {
+        const segment = this.speechQueue.shift();
+        const remaining =
+          segment.buffer.subarray(
+            segment.offset
+          );
+
+        if (remaining.length) {
+          this.push(
+            Buffer.from(remaining)
+          );
+        }
+
+        this._finishSpeechSegment(segment);
+      }
+
+      callback();
+    } catch (error) {
+      callback(error);
+    }
+  }
+
+  _destroy(error, callback) {
+    const reason =
+      error ||
+      new Error(
+        "Fergie DJ mixer stopped before speech completed"
+      );
+
+    this._rejectQueuedSpeech(reason);
+    callback(error);
+  }
+}
+
 function formatDjTrack(track) {
   const artist = track?.artist || "Unknown artist";
   const title = track?.title || "Unknown title";
@@ -1352,6 +1562,304 @@ function cleanupDjTempFile(filePath) {
   try {
     fs.unlinkSync(filePath);
   } catch {}
+}
+
+function stopDjDecoder(state) {
+  if (!state?.decoderProcess) {
+    return;
+  }
+
+  try {
+    state.decoderProcess.kill("SIGKILL");
+  } catch {}
+
+  state.decoderProcess = null;
+}
+
+function destroyDjMixer(state) {
+  if (!state?.mixer) {
+    return;
+  }
+
+  try {
+    state.mixer.destroy();
+  } catch {}
+
+  state.mixer = null;
+}
+
+function cleanupDjTrackPipeline(state) {
+  stopDjDecoder(state);
+  destroyDjMixer(state);
+
+  cleanupDjTempFile(
+    state.currentFile
+  );
+
+  state.currentFile = null;
+}
+
+function spawnDjMusicDecoder(trackFile, guildId) {
+  const decoder = spawn(
+    "ffmpeg",
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-nostdin",
+      "-i",
+      trackFile,
+      "-f",
+      "s16le",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
+      "pipe:1",
+    ],
+    {
+      stdio: [
+        "ignore",
+        "pipe",
+        "pipe",
+      ],
+    }
+  );
+
+  let stderr = "";
+
+  decoder.stderr.on(
+    "data",
+    (chunk) => {
+      stderr += chunk.toString();
+
+      if (stderr.length > 4000) {
+        stderr =
+          stderr.slice(-4000);
+      }
+    }
+  );
+
+  decoder.once(
+    "error",
+    (error) => {
+      console.error(
+        `FERGIE DJ FFMPEG START ❌ guild=${guildId}`,
+        error
+      );
+    }
+  );
+
+  decoder.once(
+    "close",
+    (code, signal) => {
+      if (
+        code !== 0 &&
+        signal !== "SIGKILL"
+      ) {
+        console.error(
+          `FERGIE DJ FFMPEG EXIT ❌ guild=${guildId} code=${code} signal=${signal || "none"} ${stderr.trim()}`
+        );
+      }
+    }
+  );
+
+  return decoder;
+}
+
+async function decodeSpeechFileToPcm(
+  speechFile,
+  guildId
+) {
+  return new Promise(
+    (
+      resolve,
+      reject
+    ) => {
+      const decoder = spawn(
+        "ffmpeg",
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-nostdin",
+          "-i",
+          speechFile,
+          "-f",
+          "s16le",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "pipe:1",
+        ],
+        {
+          stdio: [
+            "ignore",
+            "pipe",
+            "pipe",
+          ],
+        }
+      );
+
+      const chunks = [];
+      let stderr = "";
+      let settled = false;
+
+      const fail =
+        (error) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+
+          try {
+            decoder.kill("SIGKILL");
+          } catch {}
+
+          reject(error);
+        };
+
+      decoder.stdout.on(
+        "data",
+        (chunk) => {
+          chunks.push(
+            Buffer.from(chunk)
+          );
+        }
+      );
+
+      decoder.stderr.on(
+        "data",
+        (chunk) => {
+          stderr += chunk.toString();
+
+          if (stderr.length > 4000) {
+            stderr =
+              stderr.slice(-4000);
+          }
+        }
+      );
+
+      decoder.once(
+        "error",
+        (error) => {
+          fail(error);
+        }
+      );
+
+      decoder.once(
+        "close",
+        (code) => {
+          if (settled) {
+            return;
+          }
+
+          if (code !== 0) {
+            settled = true;
+
+            reject(
+              new Error(
+                `Fergie DJ speech ffmpeg failed (${code}): ${stderr.trim()}`
+              )
+            );
+            return;
+          }
+
+          const pcm =
+            Buffer.concat(
+              chunks
+            );
+
+          if (pcm.length < 2) {
+            settled = true;
+
+            reject(
+              new Error(
+                "Fergie DJ speech decoder returned empty PCM"
+              )
+            );
+            return;
+          }
+
+          settled = true;
+
+          console.log(
+            `FERGIE DJ SPEECH PCM ✅ guild=${guildId} bytes=${pcm.length}`
+          );
+
+          resolve(pcm);
+        }
+      );
+    }
+  );
+}
+
+async function mixFergieSpeechIntoDj(
+  guildId,
+  speechFile
+) {
+  const state =
+    djStates.get(
+      guildId
+    );
+
+  if (
+    !state ||
+    !state.current ||
+    !state.mixer ||
+    state.mixer.destroyed
+  ) {
+    return false;
+  }
+
+  const mixer =
+    state.mixer;
+
+  let pcm;
+
+  try {
+    pcm =
+      await decodeSpeechFileToPcm(
+        speechFile,
+        guildId
+      );
+  } catch (error) {
+    cleanupDjTempFile(
+      speechFile
+    );
+
+    throw error;
+  }
+
+  // The music may have ended while ElevenLabs/ffmpeg were preparing speech.
+  // If so, leave the MP3 intact so the caller can fall back to normal TTS.
+  if (
+    !state.current ||
+    state.mixer !== mixer ||
+    mixer.destroyed
+  ) {
+    return false;
+  }
+
+  cleanupDjTempFile(
+    speechFile
+  );
+
+  console.log(
+    `FERGIE DJ DUCK START 🔉 guild=${guildId} music=${DJ_MUSIC_DUCK_VOLUME}`
+  );
+
+  await mixer.enqueueSpeech(
+    pcm
+  );
+
+  console.log(
+    `FERGIE DJ DUCK END 🔊 guild=${guildId} music=1`
+  );
+
+  return true;
 }
 
 function getDjState(guildId) {
@@ -1371,6 +1879,8 @@ function getDjState(guildId) {
     currentFile: null,
     starting: false,
     intentionallyStopping: false,
+    mixer: null,
+    decoderProcess: null,
   };
 
   player.on(AudioPlayerStatus.Playing, () => {
@@ -1380,8 +1890,10 @@ function getDjState(guildId) {
   });
 
   player.on(AudioPlayerStatus.Idle, () => {
-    cleanupDjTempFile(state.currentFile);
-    state.currentFile = null;
+    cleanupDjTrackPipeline(
+      state
+    );
+
     state.current = null;
 
     if (state.intentionallyStopping) {
@@ -1399,8 +1911,10 @@ function getDjState(guildId) {
   player.on("error", (error) => {
     console.error(`FERGIE DJ PLAYER ERROR ❌ guild=${guildId}`, error);
 
-    cleanupDjTempFile(state.currentFile);
-    state.currentFile = null;
+    cleanupDjTrackPipeline(
+      state
+    );
+
     state.current = null;
 
     setImmediate(() => {
@@ -1436,12 +1950,40 @@ async function playNextDjTrack(guildId) {
   state.starting = true;
   const track = state.queue.shift();
   let trackFile = null;
+  let mixer = null;
+  let decoderProcess = null;
 
   try {
     trackFile = await fetchFergieDjTrackToTemp(track.id);
 
-    const resource = createAudioResource(trackFile);
-    const subscription = connection.subscribe(state.player);
+    mixer =
+      new FergieDjMixer(
+        guildId
+      );
+
+    decoderProcess =
+      spawnDjMusicDecoder(
+        trackFile,
+        guildId
+      );
+
+    decoderProcess.stdout.pipe(
+      mixer
+    );
+
+    const resource =
+      createAudioResource(
+        mixer,
+        {
+          inputType:
+            StreamType.Raw,
+        }
+      );
+
+    const subscription =
+      connection.subscribe(
+        state.player
+      );
 
     if (!subscription) {
       throw new Error("Could not subscribe DJ player to voice connection");
@@ -1456,20 +1998,40 @@ async function playNextDjTrack(guildId) {
     state.subscription = subscription;
     state.current = track;
     state.currentFile = trackFile;
+    state.mixer = mixer;
+    state.decoderProcess = decoderProcess;
+
     trackFile = null;
+    mixer = null;
+    decoderProcess = null;
 
     console.log(
-      `FERGIE DJ START ▶️ guild=${guildId} track=${track.id} title=${JSON.stringify(formatDjTrack(track))}`
+      `FERGIE DJ START ▶️ guild=${guildId} track=${track.id} title=${JSON.stringify(formatDjTrack(track))} mixer=single-player`
     );
 
     state.player.play(resource);
     return true;
   } catch (error) {
+    if (decoderProcess) {
+      try {
+        decoderProcess.kill("SIGKILL");
+      } catch {}
+    }
+
+    if (mixer) {
+      try {
+        mixer.destroy();
+      } catch {}
+    }
+
     cleanupDjTempFile(trackFile);
+
     console.error(`FERGIE DJ START ❌ guild=${guildId} track=${track?.id ?? "unknown"}`, error);
 
     state.current = null;
     state.currentFile = null;
+    state.mixer = null;
+    state.decoderProcess = null;
 
     if (state.queue.length) {
       setImmediate(() => {
@@ -1509,8 +2071,10 @@ function stopDjForGuild(guildId, removeState = false) {
     state.intentionallyStopping = false;
   }
 
-  cleanupDjTempFile(state.currentFile);
-  state.currentFile = null;
+  cleanupDjTrackPipeline(
+    state
+  );
+
   state.current = null;
   state.starting = false;
 
@@ -1518,6 +2082,7 @@ function stopDjForGuild(guildId, removeState = false) {
     try {
       state.subscription.unsubscribe();
     } catch {}
+
     state.subscription = null;
   }
 
@@ -1528,6 +2093,7 @@ function stopDjForGuild(guildId, removeState = false) {
   console.log(`FERGIE DJ STOP ✅ guild=${guildId} clearQueue=true`);
   return hadMusic;
 }
+
 
 // =========================
 // SEARCH FERGIE DJ CRATE
