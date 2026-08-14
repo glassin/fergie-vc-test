@@ -459,6 +459,120 @@ function getNaturalDjPlayQuery(transcript) {
   return query || null;
 }
 
+// =========================
+// STAGE 7B: NATURAL SPOKEN DJ CONTROLS
+// =========================
+function getNaturalDjControlIntent(transcript) {
+  const text = String(transcript || "").trim();
+
+  if (!isFergieAddressed(text)) {
+    return null;
+  }
+
+  // Strip the direct address so the remaining phrase can stay simple/narrow.
+  const command = text
+    .replace(/^.*?\bferg(?:ie|i|y)?\b[\s,.:;!?-]*/i, "")
+    .trim()
+    .replace(/[.!?]+$/g, "")
+    .trim();
+
+  if (!command) {
+    return null;
+  }
+
+  if (/^(?:please\s+)?(?:skip|skip\s+(?:this|the)(?:\s+song|\s+track)?|next(?:\s+song|\s+track)?)(?:\s+please)?$/i.test(command)) {
+    return "skip";
+  }
+
+  if (/^(?:please\s+)?(?:stop(?:\s+(?:the\s+)?(?:music|song|track))?|stop\s+playing(?:\s+music)?)(?:\s+please)?$/i.test(command)) {
+    return "stop";
+  }
+
+  if (/^(?:please\s+)?(?:what(?:'s| is)\s+next|whats\s+next|show(?:\s+me)?\s+(?:the\s+)?queue|what(?:'s| is)\s+(?:in\s+)?(?:the\s+)?queue|queue)(?:\s+please)?$/i.test(command)) {
+    return "queue";
+  }
+
+  return null;
+}
+
+async function handleNaturalDjControlRequest(guildId, transcript, textChannel) {
+  const intent = getNaturalDjControlIntent(transcript);
+
+  if (!intent) {
+    return false;
+  }
+
+  console.log(`AUTO NATURAL DJ CONTROL ✅ guild=${guildId} intent=${intent}`);
+
+  if (intent === "skip") {
+    const state = djStates.get(guildId);
+
+    if (!state || !state.current) {
+      try {
+        await textChannel.send("🎧 nothing is playing to skip.");
+      } catch {}
+      return true;
+    }
+
+    const skipped = formatDjTrack(state.current);
+    state.player.stop(true);
+
+    try {
+      await textChannel.send(`⏭️ skipped **${skipped}**.`);
+    } catch {}
+    return true;
+  }
+
+  if (intent === "stop") {
+    const hadMusic = stopDjForGuild(guildId, false);
+
+    try {
+      await textChannel.send(
+        hadMusic
+          ? "⏹️ DJ Fergie stopped. queue cleared."
+          : "🎧 DJ Fergie isn't playing anything."
+      );
+    } catch {}
+    return true;
+  }
+
+  if (intent === "queue") {
+    const state = djStates.get(guildId);
+
+    try {
+      if (!state || (!state.current && state.queue.length === 0)) {
+        await textChannel.send("🎧 DJ Fergie's queue is empty.");
+        return true;
+      }
+
+      const lines = [];
+
+      if (state.current) {
+        lines.push(`**Now:** ${formatDjTrack(state.current)}`);
+      }
+
+      if (state.queue.length) {
+        lines.push(
+          "**Up next:**\\n" +
+          state.queue.slice(0, 10).map((track, index) =>
+            `${index + 1}. ${formatDjTrack(track)}`
+          ).join("\\n")
+        );
+      } else {
+        lines.push("**Up next:** nothing queued.");
+      }
+
+      await textChannel.send(`🎧 **DJ Fergie queue**\\n${lines.join("\\n")}`);
+    } catch (error) {
+      console.error("AUTO NATURAL DJ QUEUE STATUS ❌", error);
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
 async function handleNaturalDjPlayRequest(guildId, transcript, textChannel) {
   const query = getNaturalDjPlayQuery(transcript);
 
@@ -685,6 +799,19 @@ function startAutoListening(
                 }
 
                 leaveVoiceForGuild(guildId);
+                return;
+              }
+
+              // Stage 7B: intercept narrow natural spoken DJ controls before
+              // play requests and normal brain/TTS handling. These reuse the
+              // same proven Stage 6 queue/player state as the slash commands.
+              if (
+                await handleNaturalDjControlRequest(
+                  guildId,
+                  transcript,
+                  textChannel
+                )
+              ) {
                 return;
               }
 
