@@ -2138,14 +2138,42 @@ function buildAutonomousDjIntro(track) {
   const title =
     String(track?.title || "").trim();
 
-  if (
+  const hasArtist =
     artist &&
-    artist.toLowerCase() !== "unknown artist"
-  ) {
-    return `Up next, ${title} by ${artist}.`;
+    artist.toLowerCase() !==
+      "unknown artist";
+
+  const trackLabel =
+    hasArtist
+      ? `${title} by ${artist}`
+      : title;
+
+  // H.2.1: keep autonomous DJ chatter short and varied.
+  // Some transitions intentionally have no speech so Fergie does not
+  // become an announcement machine between every song.
+  const roll =
+    Math.random();
+
+  if (roll < 0.22) {
+    return null;
   }
 
-  return `Up next, ${title}.`;
+  const intros = [
+    `Up next, ${trackLabel}.`,
+    `Alright, next one. ${trackLabel}.`,
+    `Fine, we're doing ${trackLabel}.`,
+    `Okay, this one's ${trackLabel}.`,
+    `Next up, ${trackLabel}. Try to keep up.`,
+    `Apparently we're listening to ${trackLabel} now.`,
+    `Here. ${trackLabel}. You're welcome.`,
+  ];
+
+  return intros[
+    Math.floor(
+      Math.random() *
+        intros.length
+    )
+  ];
 }
 
 async function speakAutonomousDjIntro(
@@ -2179,6 +2207,14 @@ async function speakAutonomousDjIntro(
       buildAutonomousDjIntro(
         track
       );
+
+    if (!intro) {
+      console.log(
+        `FERGIE DJ AUTO INTRO SILENT 🤫 guild=${guildId} track=${track.id}`
+      );
+
+      return true;
+    }
 
     console.log(
       `FERGIE DJ AUTO INTRO 🎙️ guild=${guildId} track=${track.id} text=${JSON.stringify(intro)}`
