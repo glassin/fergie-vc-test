@@ -433,6 +433,102 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // =========================
+// STAGE 7A: NATURAL SPOKEN DJ PLAY REQUEST
+// =========================
+function getNaturalDjPlayQuery(transcript) {
+  const text = String(transcript || "").trim();
+
+  if (!isFergieAddressed(text)) {
+    return null;
+  }
+
+  // Keep this intentionally narrow for the first spoken-DJ checkpoint.
+  // Examples: "Fergie play The Greatest", "Fergie, play Skinny".
+  const match = text.match(
+    /\bferg(?:ie|i|y)?\b[\s,.:;!?-]*(?:please\s+)?play\s+(.+?)[\s.!?]*$/i
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const query = String(match[1] || "")
+    .replace(/^(?:the\s+song\s+|song\s+)/i, "")
+    .trim();
+
+  return query || null;
+}
+
+async function handleNaturalDjPlayRequest(guildId, transcript, textChannel) {
+  const query = getNaturalDjPlayQuery(transcript);
+
+  if (!query) {
+    return false;
+  }
+
+  console.log(
+    `AUTO NATURAL DJ PLAY REQUEST ✅ guild=${guildId} query=${JSON.stringify(query)}`
+  );
+
+  const connection = getVoiceConnection(guildId);
+
+  if (!connection) {
+    try {
+      await textChannel.send("🎧 I need to be in VC first.");
+    } catch {}
+    return true;
+  }
+
+  try {
+    const results = await searchFergieDjCrate(query);
+
+    if (!results.length) {
+      await textChannel.send(`🎧 No DJ crate matches for **${query}**.`);
+      return true;
+    }
+
+    const track = results[0];
+    const state = getDjState(guildId);
+    const wasIdle = !state.current && !state.starting && state.queue.length === 0;
+
+    state.queue.push(track);
+
+    console.log(
+      `AUTO NATURAL DJ QUEUE ADD ✅ guild=${guildId} track=${track.id} queue=${state.queue.length}`
+    );
+
+    if (wasIdle) {
+      await playNextDjTrack(guildId);
+    }
+
+    const artist = track.artist || "Unknown artist";
+    const title = track.title || "Unknown title";
+    const nowPlayingThisTrack =
+      state.current && String(state.current.id) === String(track.id);
+
+    if (nowPlayingThisTrack) {
+      await textChannel.send(`🎧 DJ Fergie: playing **${artist} — ${title}**.`);
+    } else {
+      const position = state.queue.findIndex(
+        (queued) => String(queued.id) === String(track.id)
+      ) + 1;
+
+      await textChannel.send(
+        `🎧 queued **${artist} — ${title}**${position > 0 ? ` (position ${position})` : ""}.`
+      );
+    }
+  } catch (error) {
+    console.error("AUTO NATURAL DJ PLAY ❌", error);
+
+    try {
+      await textChannel.send("❌ DJ playback failed. Check the Railway logs.");
+    } catch {}
+  }
+
+  return true;
+}
+
+// =========================
 // AUTOMATIC VC LISTENER
 // =========================
 function startAutoListening(
@@ -589,6 +685,18 @@ function startAutoListening(
                 }
 
                 leaveVoiceForGuild(guildId);
+                return;
+              }
+
+              // Stage 7A: intercept a narrow natural spoken play request before
+              // normal brain/TTS handling, and reuse the proven Stage 6 DJ engine.
+              if (
+                await handleNaturalDjPlayRequest(
+                  guildId,
+                  transcript,
+                  textChannel
+                )
+              ) {
                 return;
               }
 
