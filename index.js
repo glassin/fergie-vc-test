@@ -1443,7 +1443,7 @@ async function checkFergieDjTrackFetch() {
 
 const DJ_MUSIC_NORMAL_VOLUME = 0.80;
 const DJ_MUSIC_DUCK_VOLUME = 0.20;
-const DJ_SPEECH_VOLUME = 1.30;
+const DJ_SPEECH_VOLUME = 1.40;
 
 function clampPcm16(value) {
   if (value > 32767) {
