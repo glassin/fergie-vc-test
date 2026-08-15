@@ -891,11 +891,15 @@ function startAutoListening(
                 );
               }
 
+              const currentDjTrack =
+                djStates.get(guildId)?.current || null;
+
               const fergieReply =
                 await askFergieBrain(
                   userId,
                   member.displayName,
-                  transcript
+                  transcript,
+                  currentDjTrack
                 );
 
               if (!fergieReply) {
@@ -1163,7 +1167,8 @@ async function transcribeWithElevenLabs(
 async function askFergieBrain(
   userId,
   displayName,
-  transcript
+  transcript,
+  nowPlaying = null
 ) {
   if (!FERGIE_BRAIN_URL) {
     throw new Error(
@@ -1196,6 +1201,21 @@ async function askFergieBrain(
           display_name:
             displayName || "Unknown member",
           transcript: transcript,
+
+          // Live DJ context for natural references such as
+          // "this song", "what's this about?", and "why did you pick this?"
+          now_playing: nowPlaying
+            ? {
+                id:
+                  nowPlaying.id ?? null,
+                title:
+                  String(nowPlaying.title || "").trim(),
+                artist:
+                  String(nowPlaying.artist || "Unknown artist").trim(),
+                album:
+                  String(nowPlaying.album || "").trim(),
+              }
+            : null,
         }),
       }
     );
