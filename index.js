@@ -1441,7 +1441,8 @@ async function checkFergieDjTrackFetch() {
 // is ducked to 18% and Fergie's voice is mixed over it. The music decoder never
 // stops, so the track keeps its position underneath her speech.
 
-const DJ_MUSIC_DUCK_VOLUME = 0.18;
+const DJ_MUSIC_NORMAL_VOLUME = 0.80;
+const DJ_MUSIC_DUCK_VOLUME = 0.20;
 const DJ_SPEECH_VOLUME = 1.0;
 
 function clampPcm16(value) {
@@ -1515,7 +1516,9 @@ class FergieDjMixer extends Transform {
 
     for (let offset = 0; offset + 1 < musicBuffer.length; offset += 2) {
       const musicSample = musicBuffer.readInt16LE(offset);
-      let mixedSample = musicSample;
+      let mixedSample = clampPcm16(
+        musicSample * DJ_MUSIC_NORMAL_VOLUME
+      );
 
       if (this.speechQueue.length) {
         const segment = this.speechQueue[0];
