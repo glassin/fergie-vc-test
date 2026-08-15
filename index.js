@@ -33,6 +33,13 @@ const VOICE_CHANCE_NORMAL = 0.05;
 const VOICE_CHANCE_DIRECT = 1.00;
 const VOICE_COOLDOWN_MS = 5 * 60 * 1000;
 
+// Post-5.0 Auto-DJ personality layer.
+// Only autonomous tracks are eligible. Commentary is intentionally occasional
+// so Fergie feels like a DJ, not a radio host who never shuts up.
+const DJ_COMMENTARY_CHANCE = 0.40;
+const DJ_COMMENTARY_MIN_DELAY_MS = 8000;
+const DJ_COMMENTARY_MAX_DELAY_MS = 15000;
+
 // Rare chance Fergie butts into a conversation
 // even when nobody said her name.
 const UNSOLICITED_RESPONSE_CHANCE = 0.05;
@@ -1979,6 +1986,10 @@ function getDjState(guildId) {
     // H.3 smart autonomous selection memory.
     recentAutonomousTrackIds: [],
     recentAutonomousArtists: [],
+
+    // Post-5.0 Gemini mid-song DJ commentary.
+    autonomousCommentaryInFlight: false,
+    autonomousCommentaryTimer: null,
   };
 
   player.on(AudioPlayerStatus.Playing, () => {
@@ -1989,6 +2000,13 @@ function getDjState(guildId) {
 
   player.on(AudioPlayerStatus.Idle, () => {
     const finishedTrack = state.current;
+
+    if (state.autonomousCommentaryTimer) {
+      clearTimeout(
+        state.autonomousCommentaryTimer
+      );
+      state.autonomousCommentaryTimer = null;
+    }
 
     cleanupDjTrackPipeline(
       state
@@ -2352,6 +2370,255 @@ async function queueAutonomousDjTrack(guildId) {
   return chosen;
 }
 
+async function fetchAutonomousDjCommentary(track) {
+  if (!FERGIE_BRAIN_URL || !VC_BRIDGE_SECRET) {
+    return "";
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_BRAIN_URL}/dj-commentary`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-VC-Bridge-Secret":
+            VC_BRIDGE_SECRET,
+        },
+        body: JSON.stringify({
+          title:
+            String(track?.title || "").trim(),
+          artist:
+            String(track?.artist || "Unknown artist").trim(),
+          album:
+            String(track?.album || "").trim(),
+        }),
+        signal:
+          AbortSignal.timeout(12000),
+      }
+    );
+
+    if (!response.ok) {
+      console.warn(
+        `FERGIE DJ COMMENTARY BRAIN ⚪ status=${response.status}`
+      );
+      return "";
+    }
+
+    const result =
+      await response.json();
+
+    if (!result?.ok) {
+      return "";
+    }
+
+    return String(
+      result.commentary || ""
+    ).trim();
+  } catch (error) {
+    console.warn(
+      `FERGIE DJ COMMENTARY BRAIN ⚪ ${error?.message || error}`
+    );
+    return "";
+  }
+}
+
+
+async function speakAutonomousDjCommentary(
+  guildId,
+  track
+) {
+  const state =
+    djStates.get(
+      guildId
+    );
+
+  if (
+    !state ||
+    !state.current ||
+    String(state.current.id) !==
+      String(track?.id) ||
+    !state.mixer ||
+    state.mixer.destroyed ||
+    state.autonomousCommentaryInFlight
+  ) {
+    return false;
+  }
+
+  state.autonomousCommentaryInFlight =
+    true;
+
+  let speechFile = null;
+
+  try {
+    const commentary =
+      await fetchAutonomousDjCommentary(
+        track
+      );
+
+    // Gemini/network latency may outlive the track. Re-check before TTS.
+    const latestAfterBrain =
+      djStates.get(
+        guildId
+      );
+
+    if (
+      !commentary ||
+      !latestAfterBrain ||
+      !latestAfterBrain.current ||
+      String(latestAfterBrain.current.id) !==
+        String(track?.id) ||
+      !latestAfterBrain.mixer ||
+      latestAfterBrain.mixer.destroyed
+    ) {
+      return false;
+    }
+
+    console.log(
+      `FERGIE DJ COMMENTARY 🎙️ guild=${guildId} track=${track.id} text=${JSON.stringify(commentary)}`
+    );
+
+    speechFile =
+      await generateFergieSpeech(
+        commentary,
+        `dj_commentary_${guildId}`
+      );
+
+    // TTS can also take long enough for a skip/track-end, so the proven mixer
+    // gets the final say. A false return is harmless and playback continues.
+    const mixed =
+      await mixFergieSpeechIntoDj(
+        guildId,
+        speechFile
+      );
+
+    if (!mixed) {
+      cleanupDjTempFile(
+        speechFile
+      );
+
+      console.warn(
+        `FERGIE DJ COMMENTARY ⚪ track ended before speech guild=${guildId} track=${track.id}`
+      );
+
+      return false;
+    }
+
+    console.log(
+      `FERGIE DJ COMMENTARY COMPLETE ✅ guild=${guildId} track=${track.id}`
+    );
+
+    return true;
+  } catch (error) {
+    cleanupDjTempFile(
+      speechFile
+    );
+
+    console.error(
+      `FERGIE DJ COMMENTARY ❌ guild=${guildId} track=${track?.id ?? "unknown"}`,
+      error
+    );
+
+    // Commentary failure must never stop, skip, or restart music.
+    return false;
+  } finally {
+    const latest =
+      djStates.get(
+        guildId
+      );
+
+    if (latest) {
+      latest.autonomousCommentaryInFlight =
+        false;
+    }
+  }
+}
+
+
+function scheduleAutonomousDjCommentary(
+  guildId,
+  track
+) {
+  const state =
+    djStates.get(
+      guildId
+    );
+
+  if (!state) {
+    return;
+  }
+
+  if (state.autonomousCommentaryTimer) {
+    clearTimeout(
+      state.autonomousCommentaryTimer
+    );
+    state.autonomousCommentaryTimer = null;
+  }
+
+  const roll =
+    Math.random();
+
+  if (roll >= DJ_COMMENTARY_CHANCE) {
+    console.log(
+      `FERGIE DJ COMMENTARY SILENT 🤫 guild=${guildId} track=${track?.id ?? "unknown"} roll=${roll.toFixed(3)} chance=${DJ_COMMENTARY_CHANCE.toFixed(2)}`
+    );
+    return;
+  }
+
+  const span =
+    Math.max(
+      0,
+      DJ_COMMENTARY_MAX_DELAY_MS -
+        DJ_COMMENTARY_MIN_DELAY_MS
+    );
+
+  const delay =
+    DJ_COMMENTARY_MIN_DELAY_MS +
+    Math.floor(
+      Math.random() * (span + 1)
+    );
+
+  console.log(
+    `FERGIE DJ COMMENTARY SCHEDULED 🧠 guild=${guildId} track=${track?.id ?? "unknown"} delayMs=${delay}`
+  );
+
+  state.autonomousCommentaryTimer =
+    setTimeout(
+      () => {
+        const latest =
+          djStates.get(
+            guildId
+          );
+
+        if (latest) {
+          latest.autonomousCommentaryTimer =
+            null;
+        }
+
+        if (
+          !latest ||
+          !latest.current ||
+          String(latest.current.id) !==
+            String(track?.id)
+        ) {
+          return;
+        }
+
+        speakAutonomousDjCommentary(
+          guildId,
+          track
+        ).catch((error) => {
+          console.error(
+            `FERGIE DJ COMMENTARY TASK ❌ guild=${guildId} track=${track?.id ?? "unknown"}`,
+            error
+          );
+        });
+      },
+      delay
+    );
+}
+
+
 function buildAutonomousDjIntro(
   track,
   previousTrack,
@@ -2636,6 +2903,13 @@ async function playNextDjTrack(guildId) {
       state.pendingAutonomousIntroTrackId =
         null;
 
+      // Autonomous tracks may get one short Gemini-generated mid-song thought.
+      // Manual /djplay and natural play requests never schedule this.
+      scheduleAutonomousDjCommentary(
+        guildId,
+        track
+      );
+
       // Give the new music stream a moment to become active, then speak
       // through the proven H/7C single-player mixer. Never create a second
       // Discord audio subscription for autonomous DJ speech.
@@ -2714,6 +2988,14 @@ function stopDjForGuild(guildId, removeState = false) {
 
   state.queue.length = 0;
   state.pendingAutonomousIntroTrackId = null;
+
+  if (state.autonomousCommentaryTimer) {
+    clearTimeout(
+      state.autonomousCommentaryTimer
+    );
+    state.autonomousCommentaryTimer = null;
+  }
+
   state.previousTrack = null;
   state.lastAutonomousIntroText = null;
   state.autonomousTracksSinceSpeech = 0;
