@@ -1972,6 +1972,10 @@ function getDjState(guildId) {
     previousTrack: null,
     lastAutonomousIntroText: null,
     autonomousTracksSinceSpeech: 0,
+
+    // H.3 smart autonomous selection memory.
+    recentAutonomousTrackIds: [],
+    recentAutonomousArtists: [],
   };
 
   player.on(AudioPlayerStatus.Playing, () => {
@@ -2100,27 +2104,99 @@ async function queueAutonomousDjTrack(guildId) {
     return null;
   }
 
-  const candidates =
+  const recentIds =
+    new Set(
+      state.recentAutonomousTrackIds.map(
+        (id) => String(id)
+      )
+    );
+
+  const lastArtist =
+    String(
+      state.recentAutonomousArtists[
+        state.recentAutonomousArtists.length - 1
+      ] || ""
+    ).trim().toLowerCase();
+
+  let pool =
     crate.filter(
+      (track) =>
+        !recentIds.has(
+          String(track?.id)
+        )
+    );
+
+  if (!pool.length) {
+    pool = [...crate];
+  }
+
+  const differentArtistPool =
+    pool.filter(
+      (track) => {
+        const artist =
+          String(
+            track?.artist || ""
+          ).trim().toLowerCase();
+
+        return (
+          !lastArtist ||
+          !artist ||
+          artist === "unknown artist" ||
+          artist !== lastArtist
+        );
+      }
+    );
+
+  if (differentArtistPool.length) {
+    pool = differentArtistPool;
+  }
+
+  const immediateNonRepeat =
+    pool.filter(
       (track) =>
         String(track?.id) !==
         String(state.lastTrackId)
     );
 
-  const pool =
-    candidates.length
-      ? candidates
-      : crate;
+  if (immediateNonRepeat.length) {
+    pool = immediateNonRepeat;
+  }
 
   const chosen =
     pool[
       Math.floor(
-        Math.random() * pool.length
+        Math.random() *
+          pool.length
       )
     ];
 
   if (!chosen) {
     return null;
+  }
+
+  const chosenArtist =
+    String(
+      chosen?.artist || ""
+    ).trim();
+
+  state.recentAutonomousTrackIds.push(
+    chosen.id
+  );
+
+  state.recentAutonomousArtists.push(
+    chosenArtist
+  );
+
+  while (
+    state.recentAutonomousTrackIds.length > 3
+  ) {
+    state.recentAutonomousTrackIds.shift();
+  }
+
+  while (
+    state.recentAutonomousArtists.length > 3
+  ) {
+    state.recentAutonomousArtists.shift();
   }
 
   state.queue.push(
@@ -2131,7 +2207,7 @@ async function queueAutonomousDjTrack(guildId) {
     chosen.id;
 
   console.log(
-    `FERGIE DJ AUTONOMOUS PICK 🤖 guild=${guildId} track=${chosen.id} title=${JSON.stringify(formatDjTrack(chosen))}`
+    `FERGIE DJ AUTONOMOUS PICK 🤖 guild=${guildId} track=${chosen.id} title=${JSON.stringify(formatDjTrack(chosen))} recent=${JSON.stringify(state.recentAutonomousTrackIds)}`
   );
 
   return chosen;
@@ -2502,6 +2578,8 @@ function stopDjForGuild(guildId, removeState = false) {
   state.previousTrack = null;
   state.lastAutonomousIntroText = null;
   state.autonomousTracksSinceSpeech = 0;
+  state.recentAutonomousTrackIds = [];
+  state.recentAutonomousArtists = [];
   state.intentionallyStopping = Boolean(state.current);
 
   let stopTriggeredIdle = false;
