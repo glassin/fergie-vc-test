@@ -1441,8 +1441,8 @@ async function checkFergieDjTrackFetch() {
 // is ducked to 18% and Fergie's voice is mixed over it. The music decoder never
 // stops, so the track keeps its position underneath her speech.
 
-const DJ_MUSIC_NORMAL_VOLUME = 0.50;
-const DJ_MUSIC_DUCK_VOLUME = 0.20;
+const DJ_MUSIC_NORMAL_VOLUME = 0.40;
+const DJ_MUSIC_DUCK_VOLUME = 0.10;
 const DJ_SPEECH_VOLUME = 2.00;
 
 function clampPcm16(value) {
