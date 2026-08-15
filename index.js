@@ -2049,6 +2049,139 @@ function getDjState(guildId) {
   return state;
 }
 
+
+async function fetchDjTasteSignals() {
+  // J.4: failure is intentionally harmless. Autonomous DJ falls back to
+  // the exact existing random-selection behavior.
+  if (
+    !FERGIE_BRAIN_URL ||
+    !VC_BRIDGE_SECRET
+  ) {
+    return {};
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_BRAIN_URL}/dj-taste-signals`,
+      {
+        method: "GET",
+        headers: {
+          "X-VC-Bridge-Secret":
+            VC_BRIDGE_SECRET,
+        },
+        signal:
+          AbortSignal.timeout(5000),
+      }
+    );
+
+    if (!response.ok) {
+      return {};
+    }
+
+    const result =
+      await response.json();
+
+    if (
+      !result?.ok ||
+      !result?.artist_signals ||
+      typeof result.artist_signals !== "object"
+    ) {
+      return {};
+    }
+
+    return result.artist_signals;
+  } catch (error) {
+    console.warn(
+      `FERGIE DJ TASTE SIGNAL ⚪ fallback=random reason=${error?.message || error}`
+    );
+    return {};
+  }
+}
+
+
+function djTasteWeight(track, artistSignals) {
+  const artist =
+    String(
+      track?.artist || ""
+    ).trim().toLowerCase();
+
+  if (!artist) {
+    return 1.0;
+  }
+
+  const rawHits =
+    Number(
+      artistSignals?.[artist] || 0
+    );
+
+  const hits =
+    Number.isFinite(rawHits)
+      ? Math.max(
+          0,
+          Math.min(4, rawHits)
+        )
+      : 0;
+
+  // Maximum influence is +8%. Randomness remains overwhelmingly dominant.
+  return 1.0 + (hits * 0.02);
+}
+
+
+function chooseTasteNudgedTrack(pool, artistSignals) {
+  if (
+    !Array.isArray(pool) ||
+    !pool.length
+  ) {
+    return null;
+  }
+
+  const weights =
+    pool.map(
+      (track) =>
+        djTasteWeight(
+          track,
+          artistSignals
+        )
+    );
+
+  const total =
+    weights.reduce(
+      (sum, weight) =>
+        sum + weight,
+      0
+    );
+
+  let roll =
+    Math.random() * total;
+
+  for (
+    let i = 0;
+    i < pool.length;
+    i += 1
+  ) {
+    roll -= weights[i];
+
+    if (roll <= 0) {
+      const chosen = pool[i];
+
+      if (weights[i] > 1.0) {
+        console.log(
+          `FERGIE DJ TASTE NUDGE 🧠 artist=${chosen?.artist || "Unknown artist"} bonus=${(weights[i] - 1.0).toFixed(2)}`
+        );
+      }
+
+      return chosen;
+    }
+  }
+
+  return pool[
+    Math.floor(
+      Math.random() *
+        pool.length
+    )
+  ];
+}
+
 async function queueAutonomousDjTrack(guildId) {
   const state = getDjState(guildId);
 
@@ -2162,13 +2295,16 @@ async function queueAutonomousDjTrack(guildId) {
     pool = immediateNonRepeat;
   }
 
+  // J.4: all proven H.3 rotation filters above remain authoritative.
+  // Taste is only a tiny final-stage weighting nudge.
+  const artistSignals =
+    await fetchDjTasteSignals();
+
   const chosen =
-    pool[
-      Math.floor(
-        Math.random() *
-          pool.length
-      )
-    ];
+    chooseTasteNudgedTrack(
+      pool,
+      artistSignals
+    );
 
   if (!chosen) {
     return null;
