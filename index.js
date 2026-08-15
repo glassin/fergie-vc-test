@@ -40,6 +40,16 @@ const DJ_COMMENTARY_CHANCE = 0.40;
 const DJ_COMMENTARY_MIN_DELAY_MS = 8000;
 const DJ_COMMENTARY_MAX_DELAY_MS = 15000;
 
+// Post-5.0 Auto-DJ dance emote.
+// Posts once per eligible autonomous track to both configured channels.
+const DJ_DANCE_EMOTE = "<a:pp_twerk:1274469828492525823>";
+const DJ_DANCE_CHANNEL_IDS = [
+  "1131572915813502990",
+  "1538036999011827804",
+];
+const DJ_DANCE_MIN_DELAY_MS = 25000;
+const DJ_DANCE_MAX_DELAY_MS = 55000;
+
 // Rare chance Fergie butts into a conversation
 // even when nobody said her name.
 const UNSOLICITED_RESPONSE_CHANCE = 0.05;
@@ -2010,6 +2020,9 @@ function getDjState(guildId) {
     // Post-5.0 Gemini mid-song DJ commentary.
     autonomousCommentaryInFlight: false,
     autonomousCommentaryTimer: null,
+
+    // Post-5.0 Auto-DJ dance emote.
+    autonomousDanceTimer: null,
   };
 
   player.on(AudioPlayerStatus.Playing, () => {
@@ -2026,6 +2039,13 @@ function getDjState(guildId) {
         state.autonomousCommentaryTimer
       );
       state.autonomousCommentaryTimer = null;
+    }
+
+    if (state.autonomousDanceTimer) {
+      clearTimeout(
+        state.autonomousDanceTimer
+      );
+      state.autonomousDanceTimer = null;
     }
 
     cleanupDjTrackPipeline(
@@ -2639,6 +2659,208 @@ function scheduleAutonomousDjCommentary(
 }
 
 
+async function fetchAutonomousDjDanceCheck(track) {
+  if (!FERGIE_BRAIN_URL || !VC_BRIDGE_SECRET) {
+    return false;
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_BRAIN_URL}/dj-dance-check`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-VC-Bridge-Secret":
+            VC_BRIDGE_SECRET,
+        },
+        body: JSON.stringify({
+          title:
+            String(track?.title || "").trim(),
+          artist:
+            String(track?.artist || "Unknown artist").trim(),
+          album:
+            String(track?.album || "").trim(),
+        }),
+        signal:
+          AbortSignal.timeout(12000),
+      }
+    );
+
+    if (!response.ok) {
+      console.warn(
+        `FERGIE DJ DANCE CHECK ⚪ status=${response.status}`
+      );
+      return false;
+    }
+
+    const result =
+      await response.json();
+
+    return Boolean(
+      result?.ok &&
+      result?.danceable
+    );
+  } catch (error) {
+    console.warn(
+      `FERGIE DJ DANCE CHECK ⚪ ${error?.message || error}`
+    );
+    return false;
+  }
+}
+
+
+async function postAutonomousDjDanceEmote(
+  guildId,
+  track
+) {
+  const state =
+    djStates.get(
+      guildId
+    );
+
+  if (
+    !state ||
+    !state.current ||
+    String(state.current.id) !==
+      String(track?.id)
+  ) {
+    return false;
+  }
+
+  const danceable =
+    await fetchAutonomousDjDanceCheck(
+      track
+    );
+
+  const latest =
+    djStates.get(
+      guildId
+    );
+
+  if (
+    !danceable ||
+    !latest ||
+    !latest.current ||
+    String(latest.current.id) !==
+      String(track?.id)
+  ) {
+    return false;
+  }
+
+  let posted = 0;
+
+  for (
+    const channelId of
+    DJ_DANCE_CHANNEL_IDS
+  ) {
+    try {
+      const channel =
+        await client.channels.fetch(
+          channelId
+        );
+
+      if (
+        channel &&
+        typeof channel.send === "function"
+      ) {
+        await channel.send(
+          DJ_DANCE_EMOTE
+        );
+        posted += 1;
+      }
+    } catch (error) {
+      console.warn(
+        `FERGIE DJ DANCE POST ⚪ guild=${guildId} channel=${channelId} ${error?.message || error}`
+      );
+    }
+  }
+
+  if (posted > 0) {
+    console.log(
+      `FERGIE DJ DANCE 💃 guild=${guildId} track=${track?.id ?? "unknown"} channels=${posted}`
+    );
+    return true;
+  }
+
+  return false;
+}
+
+
+function scheduleAutonomousDjDanceEmote(
+  guildId,
+  track
+) {
+  const state =
+    djStates.get(
+      guildId
+    );
+
+  if (!state) {
+    return;
+  }
+
+  if (state.autonomousDanceTimer) {
+    clearTimeout(
+      state.autonomousDanceTimer
+    );
+    state.autonomousDanceTimer = null;
+  }
+
+  const span =
+    Math.max(
+      0,
+      DJ_DANCE_MAX_DELAY_MS -
+        DJ_DANCE_MIN_DELAY_MS
+    );
+
+  const delay =
+    DJ_DANCE_MIN_DELAY_MS +
+    Math.floor(
+      Math.random() * (span + 1)
+    );
+
+  console.log(
+    `FERGIE DJ DANCE CHECK SCHEDULED 💃 guild=${guildId} track=${track?.id ?? "unknown"} delayMs=${delay}`
+  );
+
+  state.autonomousDanceTimer =
+    setTimeout(
+      () => {
+        const latest =
+          djStates.get(
+            guildId
+          );
+
+        if (latest) {
+          latest.autonomousDanceTimer =
+            null;
+        }
+
+        if (
+          !latest ||
+          !latest.current ||
+          String(latest.current.id) !==
+            String(track?.id)
+        ) {
+          return;
+        }
+
+        postAutonomousDjDanceEmote(
+          guildId,
+          track
+        ).catch((error) => {
+          console.error(
+            `FERGIE DJ DANCE TASK ❌ guild=${guildId} track=${track?.id ?? "unknown"}`,
+            error
+          );
+        });
+      },
+      delay
+    );
+}
+
+
 function buildAutonomousDjIntro(
   track,
   previousTrack,
@@ -2930,6 +3152,11 @@ async function playNextDjTrack(guildId) {
         track
       );
 
+      scheduleAutonomousDjDanceEmote(
+        guildId,
+        track
+      );
+
       // Give the new music stream a moment to become active, then speak
       // through the proven H/7C single-player mixer. Never create a second
       // Discord audio subscription for autonomous DJ speech.
@@ -3014,6 +3241,13 @@ function stopDjForGuild(guildId, removeState = false) {
       state.autonomousCommentaryTimer
     );
     state.autonomousCommentaryTimer = null;
+  }
+
+  if (state.autonomousDanceTimer) {
+    clearTimeout(
+      state.autonomousDanceTimer
+    );
+    state.autonomousDanceTimer = null;
   }
 
   state.previousTrack = null;
