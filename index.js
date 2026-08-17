@@ -2091,7 +2091,6 @@ function getDjState(guildId) {
 
     if (state.intentionallyStopping) {
       state.intentionallyStopping = false;
-      return;
     }
 
     setImmediate(async () => {
