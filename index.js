@@ -392,7 +392,16 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    const skipped = formatDjTrack(state.current);
+    const skippedTrack = { ...state.current };
+    const skipped = formatDjTrack(skippedTrack);
+    recordDjPopularityEvent({
+      guildId: interaction.guild.id,
+      track: skippedTrack,
+      event: "skip",
+      userId: interaction.user.id,
+      source: "manual",
+    }).catch(() => {});
+    state.intentionallyStopping = true;
     state.player.stop(true);
     await interaction.reply(`⏭️ skipped **${skipped}**.`);
     return;
@@ -539,7 +548,7 @@ function getNaturalDjControlIntent(transcript) {
   return null;
 }
 
-async function handleNaturalDjControlRequest(guildId, transcript, textChannel) {
+async function handleNaturalDjControlRequest(guildId, transcript, textChannel, userId = null) {
   const intent = getNaturalDjControlIntent(transcript);
 
   if (!intent) {
@@ -558,7 +567,16 @@ async function handleNaturalDjControlRequest(guildId, transcript, textChannel) {
       return true;
     }
 
-    const skipped = formatDjTrack(state.current);
+    const skippedTrack = { ...state.current };
+    const skipped = formatDjTrack(skippedTrack);
+    recordDjPopularityEvent({
+      guildId,
+      track: skippedTrack,
+      event: "skip",
+      userId,
+      source: "voice",
+    }).catch(() => {});
+    state.intentionallyStopping = true;
     state.player.stop(true);
 
     try {
@@ -853,7 +871,8 @@ function startAutoListening(
                 await handleNaturalDjControlRequest(
                   guildId,
                   transcript,
-                  textChannel
+                  textChannel,
+                  userId
                 )
               ) {
                 return;
@@ -2059,6 +2078,15 @@ function getDjState(guildId) {
       };
     }
 
+    if (!state.intentionallyStopping && finishedTrack) {
+      recordDjPopularityEvent({
+        guildId,
+        track: finishedTrack,
+        event: "finish",
+        source: "auto",
+      }).catch(() => {});
+    }
+
     state.current = null;
 
     if (state.intentionallyStopping) {
@@ -2188,7 +2216,67 @@ function djTasteWeight(track, artistSignals) {
 }
 
 
-function chooseTasteNudgedTrack(pool, artistSignals) {
+async function fetchDjPopularitySignals(guildId) {
+  if (!FERGIE_BRAIN_URL || !VC_BRIDGE_SECRET) {
+    return {};
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_BRAIN_URL}/dj-popularity-signals?guild_id=${encodeURIComponent(guildId)}`,
+      {
+        method: "GET",
+        headers: {
+          "X-VC-Bridge-Secret": VC_BRIDGE_SECRET,
+        },
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+
+    if (!response.ok) {
+      return {};
+    }
+
+    const result = await response.json();
+    if (!result?.ok || !result?.track_signals || typeof result.track_signals !== "object") {
+      return {};
+    }
+
+    return result.track_signals;
+  } catch (error) {
+    console.warn(
+      `FERGIE DJ POPULARITY SIGNAL ⚪ fallback=neutral reason=${error?.message || error}`
+    );
+    return {};
+  }
+}
+
+
+function djPopularityWeight(track, popularitySignals) {
+  const signal = popularitySignals?.[String(track?.id)] || null;
+  if (!signal || typeof signal !== "object") {
+    return 1.0;
+  }
+
+  const plays = Number(signal.plays || 0);
+  const retention = Number(signal.retention);
+  const recencyDays = Number(signal.recency_days || 0);
+  if (!Number.isFinite(plays) || plays < 3 || !Number.isFinite(retention)) {
+    return 1.0;
+  }
+
+  // Server popularity is a light nudge only. Confidence grows with sample size,
+  // maxing out at 10 plays. The result stays within +/-10% so randomness remains
+  // the dominant Auto-DJ behavior.
+  const sampleConfidence = Math.min(1, plays / 10);
+  const recencyConfidence = Math.max(0.25, Math.exp(-Math.max(0, recencyDays) / 45));
+  const confidence = sampleConfidence * recencyConfidence;
+  const centered = Math.max(-10, Math.min(10, (retention - 60) / 4));
+  return 1.0 + (centered / 100) * confidence;
+}
+
+
+function chooseTasteNudgedTrack(pool, artistSignals, popularitySignals = {}) {
   if (
     !Array.isArray(pool) ||
     !pool.length
@@ -2202,6 +2290,9 @@ function chooseTasteNudgedTrack(pool, artistSignals) {
         djTasteWeight(
           track,
           artistSignals
+        ) * djPopularityWeight(
+          track,
+          popularitySignals
         )
     );
 
@@ -2242,6 +2333,64 @@ function chooseTasteNudgedTrack(pool, artistSignals) {
     )
   ];
 }
+
+async function recordDjPopularityEvent({
+  guildId,
+  track,
+  event,
+  userId = null,
+  source = "auto",
+}) {
+  if (!FERGIE_BRAIN_URL || !VC_BRIDGE_SECRET || !track?.id || !event) {
+    return false;
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_BRAIN_URL}/dj-popularity-event`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-VC-Bridge-Secret": VC_BRIDGE_SECRET,
+        },
+        body: JSON.stringify({
+          guild_id: guildId,
+          track_id: String(track.id),
+          title: String(track.title || "Unknown title"),
+          artist: String(track.artist || "Unknown artist"),
+          event,
+          user_id: userId != null ? String(userId) : null,
+          source,
+        }),
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+
+    if (!response.ok) {
+      console.warn(
+        `FERGIE DJ POPULARITY ⚪ event=${event} status=${response.status}`
+      );
+      return false;
+    }
+
+    const result = await response.json();
+    if (!result?.ok) {
+      console.warn(
+        `FERGIE DJ POPULARITY ⚪ event=${event} rejected=${JSON.stringify(result)}`
+      );
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.warn(
+      `FERGIE DJ POPULARITY ⚪ event=${event} ${error?.message || error}`
+    );
+    return false;
+  }
+}
+
 
 async function queueAutonomousDjTrack(guildId) {
   const state = getDjState(guildId);
@@ -2361,10 +2510,16 @@ async function queueAutonomousDjTrack(guildId) {
   const artistSignals =
     await fetchDjTasteSignals();
 
+  const popularitySignals =
+    await fetchDjPopularitySignals(
+      guildId
+    );
+
   const chosen =
     chooseTasteNudgedTrack(
       pool,
-      artistSignals
+      artistSignals,
+      popularitySignals
     );
 
   if (!chosen) {
@@ -3133,6 +3288,13 @@ async function playNextDjTrack(guildId) {
     );
 
     state.player.play(resource);
+
+    recordDjPopularityEvent({
+      guildId,
+      track,
+      event: "play",
+      source: "auto",
+    }).catch(() => {});
 
     const shouldAutoIntro =
       String(
