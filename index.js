@@ -656,6 +656,52 @@ async function handleNaturalDjPlayRequest(guildId, transcript, textChannel) {
   }
 
   try {
+    // Generic requests such as "Fergie, play music" should start
+    // Fergie's real autonomous DJ rotation instead of searching
+    // the literal word "music" and always taking results[0].
+    const genericDjStart =
+      /^(?:music|some music|something|something good|anything|anything good|a song|some songs?)$/i
+        .test(String(query || "").trim());
+
+    if (genericDjStart) {
+      const state = getDjState(guildId);
+      const wasIdle =
+        !state.current &&
+        !state.starting &&
+        state.queue.length === 0;
+
+      if (!wasIdle) {
+        await textChannel.send("🎧 girl I'm already DJing. 🙄");
+        return true;
+      }
+
+      const track =
+        await queueAutonomousDjTrack(
+          guildId
+        );
+
+      if (!track) {
+        await textChannel.send(
+          "🎧 I couldn't pick a crate track right now."
+        );
+        return true;
+      }
+
+      await playNextDjTrack(guildId);
+
+      const artist =
+        track.artist || "Unknown artist";
+
+      const title =
+        track.title || "Unknown title";
+
+      await textChannel.send(
+        `🎧 DJ Fergie: playing **${artist} — ${title}**.`
+      );
+
+      return true;
+    }
+
     const results = await searchFergieDjCrate(query);
 
     if (!results.length) {
