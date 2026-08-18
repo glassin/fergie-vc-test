@@ -14,6 +14,8 @@ const {
   createAudioResource,
   AudioPlayerStatus,
   StreamType,
+  VoiceConnectionStatus,
+  entersState,
 } = require("@discordjs/voice");
 
 const prism = require("prism-media");
@@ -64,6 +66,91 @@ const autoProcessingGuilds = new Set();
 
 // Stage 6: persistent DJ playback state per Discord guild.
 const djStates = new Map();
+const voiceRecoveryStates = new Map();
+
+function attachVoiceConnectionGuards(connection, guild, textChannel) {
+  const guildId = guild.id;
+
+  const existing = voiceRecoveryStates.get(guildId);
+  if (existing?.connection === connection) {
+    return;
+  }
+
+  voiceRecoveryStates.set(guildId, {
+    connection,
+    recovering: false,
+  });
+
+  connection.on("error", (error) => {
+    console.error(
+      `FERGIE VC CONNECTION ERROR ❌ guild=${guildId} status=${connection.state?.status || "unknown"}`,
+      error
+    );
+    // IMPORTANT: handling this event prevents transient Discord voice/WebSocket
+    // errors (including HTTP 521 during handshake/reconnect) from crashing Node.
+  });
+
+  connection.on("stateChange", (oldState, newState) => {
+    console.log(
+      `FERGIE VC STATE 🔄 guild=${guildId} ${oldState.status} -> ${newState.status}`
+    );
+  });
+
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    const recovery = voiceRecoveryStates.get(guildId);
+    if (!recovery || recovery.connection !== connection || recovery.recovering) {
+      return;
+    }
+
+    recovery.recovering = true;
+    console.warn(`FERGIE VC DISCONNECTED ⚠️ guild=${guildId} attempting recovery`);
+
+    try {
+      // @discordjs/voice can recover many transient disconnects on its own.
+      // Give it a short window to move back into Signalling/Connecting/Ready.
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5000),
+        entersState(connection, VoiceConnectionStatus.Ready, 5000),
+      ]);
+
+      if (connection.state.status !== VoiceConnectionStatus.Ready) {
+        await entersState(connection, VoiceConnectionStatus.Ready, 15000);
+      }
+
+      console.log(`FERGIE VC RECOVERED ✅ guild=${guildId}`);
+    } catch (error) {
+      console.error(`FERGIE VC RECOVERY FAILED ❌ guild=${guildId}`, error);
+
+      try {
+        // Cleanly tear down the stale connection. The bot process stays alive,
+        // and Fergie can be rejoined normally instead of Railway restarting Node.
+        leaveVoiceForGuild(guildId);
+      } catch (cleanupError) {
+        console.error(`FERGIE VC CLEANUP AFTER FAILURE ❌ guild=${guildId}`, cleanupError);
+      }
+
+      try {
+        await textChannel?.send?.(
+          "⚠️ Discord voice dropped me and recovery failed. Use /join and I’ll reconnect."
+        );
+      } catch {}
+    } finally {
+      const latest = voiceRecoveryStates.get(guildId);
+      if (latest?.connection === connection) {
+        latest.recovering = false;
+      }
+    }
+  });
+
+  connection.on(VoiceConnectionStatus.Destroyed, () => {
+    const latest = voiceRecoveryStates.get(guildId);
+    if (latest?.connection === connection) {
+      voiceRecoveryStates.delete(guildId);
+    }
+  });
+}
+
 
 if (!TOKEN) {
   throw new Error("DISCORD_TOKEN environment variable is missing");
@@ -161,6 +248,7 @@ function leaveVoiceForGuild(guildId) {
   lastVoiceReplyAtByGuild.delete(guildId);
   lastUnsolicitedReplyAtByGuild.delete(guildId);
   autoProcessingGuilds.delete(guildId);
+  voiceRecoveryStates.delete(guildId);
 
   console.log(`AUTO LISTEN STOPPED ✅ guild=${guildId}`);
 
@@ -221,6 +309,12 @@ client.on("interactionCreate", async (interaction) => {
       selfDeaf: false,
       selfMute: false,
     });
+
+    attachVoiceConnectionGuards(
+      connection,
+      interaction.guild,
+      interaction.channel
+    );
 
     startAutoListening(
       connection,
@@ -3960,6 +4054,17 @@ async function playSpeechInVC(
     }
   );
 }
+
+// =========================
+// LAST-RESORT PROCESS DIAGNOSTICS
+// =========================
+process.on("unhandledRejection", (reason) => {
+  console.error("FERGIE UNHANDLED REJECTION ❌", reason);
+});
+
+process.on("uncaughtExceptionMonitor", (error, origin) => {
+  console.error(`FERGIE UNCAUGHT EXCEPTION MONITOR ❌ origin=${origin}`, error);
+});
 
 // =========================
 // LOGIN
