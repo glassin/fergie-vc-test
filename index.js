@@ -3845,9 +3845,78 @@ function shouldFergieSpeak(
 // =========================
 // ELEVENLABS TEXT-TO-SPEECH
 // =========================
+async function fetchSeasonalVoiceMode() {
+  const allowedModes = new Set([
+    "normal",
+    "whisper",
+    "scared",
+    "hollow",
+    "possessed",
+    "unstable",
+  ]);
+
+  if (
+    !FERGIE_BRAIN_URL ||
+    !VC_BRIDGE_SECRET
+  ) {
+    return "normal";
+  }
+
+  try {
+    const response = await fetch(
+      `${FERGIE_BRAIN_URL}/seasonal-voice`,
+      {
+        method: "GET",
+
+        headers: {
+          "X-VC-Bridge-Secret":
+            VC_BRIDGE_SECRET,
+        },
+
+        signal:
+          AbortSignal.timeout(5000),
+      }
+    );
+
+    if (!response.ok) {
+      console.warn(
+        `SEASONAL VOICE ⚪ fallback=normal status=${response.status}`
+      );
+
+      return "normal";
+    }
+
+    const result =
+      await response.json();
+
+    const mode =
+      String(
+        result?.mode || "normal"
+      )
+        .trim()
+        .toLowerCase();
+
+    if (
+      !result?.ok ||
+      !allowedModes.has(mode)
+    ) {
+      return "normal";
+    }
+
+    return mode;
+
+  } catch (error) {
+    console.warn(
+      `SEASONAL VOICE ⚪ fallback=normal reason=${error?.message || error}`
+    );
+
+    return "normal";
+  }
+}
 async function generateFergieSpeech(
   text,
-  userId
+  userId,
+  forcedVoiceMode = null
 ) {
   if (!ELEVENLABS_API_KEY) {
     throw new Error(
@@ -3861,29 +3930,181 @@ async function generateFergieSpeech(
     );
   }
 
-  // Keep normal Fergie on Flash v2.5.
-  // Switch to Eleven v3 only for explicit whisper cues.
+  const allowedModes = new Set([
+    "normal",
+    "whisper",
+    "scared",
+    "hollow",
+    "possessed",
+    "unstable",
+  ]);
+
   const whisperPattern =
     /(?:\*+\s*whispers?\s*\*+|\(\s*whispers?\s*\)|\[\s*whispers?\s*\])/gi;
 
-  const shouldWhisper =
+  const hasExplicitWhisper =
     whisperPattern.test(text || "");
 
   whisperPattern.lastIndex = 0;
 
-  const ttsText = shouldWhisper
-    ? (text || "").replace(
-        whisperPattern,
-        "[whispers]"
-      )
-    : text;
+  let voiceMode =
+    forcedVoiceMode != null
+      ? String(forcedVoiceMode)
+          .trim()
+          .toLowerCase()
+      : await fetchSeasonalVoiceMode();
 
-  const ttsModel = shouldWhisper
-    ? "eleven_v3"
-    : "eleven_flash_v2_5";
+  if (!allowedModes.has(voiceMode)) {
+    voiceMode = "normal";
+  }
+
+  // Preserve existing explicit whisper behavior.
+  // If Gemini deliberately wrote a whisper cue,
+  // it wins over the random seasonal roll.
+  if (hasExplicitWhisper) {
+    voiceMode = "whisper";
+  }
+
+  const cleanText =
+    String(text || "")
+      .replace(
+        whisperPattern,
+        ""
+      )
+      .trim();
+
+  let ttsText =
+    cleanText;
+
+  let ttsModel =
+    "eleven_flash_v2_5";
+
+  let voiceSettings = {
+    stability: 0.45,
+    similarity_boost: 0.8,
+    style: 0.25,
+    use_speaker_boost: true,
+  };
+
+  if (voiceMode === "whisper") {
+    ttsModel =
+      "eleven_v3";
+
+    ttsText =
+      `[whispers] ${cleanText}`;
+
+    voiceSettings = {
+      stability: 0.30,
+      similarity_boost: 0.80,
+      style: 0.55,
+      use_speaker_boost: true,
+    };
+  }
+
+  else if (voiceMode === "scared") {
+    ttsModel =
+      "eleven_v3";
+
+    ttsText =
+      `[nervously] ${cleanText}`;
+
+    voiceSettings = {
+      stability: 0.22,
+      similarity_boost: 0.82,
+      style: 0.70,
+      use_speaker_boost: true,
+    };
+  }
+
+  else if (voiceMode === "hollow") {
+    ttsModel =
+      "eleven_v3";
+
+    const words =
+      cleanText.split(/\s+/);
+
+    ttsText =
+      words.length > 4
+        ? words.join("... ")
+        : `${cleanText}...`;
+
+    voiceSettings = {
+      stability: 0.82,
+      similarity_boost: 0.84,
+      style: 0.08,
+      use_speaker_boost: true,
+    };
+  }
+
+  else if (voiceMode === "possessed") {
+    ttsModel =
+      "eleven_v3";
+
+    ttsText =
+      `[angrily] ${cleanText}`;
+
+    voiceSettings = {
+      stability: 0.18,
+      similarity_boost: 0.78,
+      style: 0.85,
+      use_speaker_boost: true,
+    };
+  }
+
+  else if (voiceMode === "unstable") {
+    ttsModel =
+      "eleven_v3";
+
+    const words =
+      cleanText.split(/\s+/);
+
+    if (words.length >= 6) {
+      const splitAt =
+        Math.max(
+          2,
+          Math.floor(
+            words.length / 2
+          )
+        );
+
+      const firstHalf =
+        words
+          .slice(
+            0,
+            splitAt
+          )
+          .join(" ");
+
+      const secondHalf =
+        words
+          .slice(
+            splitAt
+          )
+          .join(" ");
+
+      ttsText =
+        `${firstHalf}... ` +
+        `[whispers] ${secondHalf}`;
+    }
+
+    else {
+      ttsText =
+        `${cleanText}... ` +
+        `[whispers] I'm fine.`;
+    }
+
+    voiceSettings = {
+      stability: 0.16,
+      similarity_boost: 0.80,
+      style: 0.78,
+      use_speaker_boost: true,
+    };
+  }
 
   console.log(
-    `FERGIE TTS MODE: ${shouldWhisper ? "WHISPER (v3)" : "NORMAL (flash v2.5)"}`
+    `FERGIE TTS MODE 🎙️ ` +
+    `mode=${voiceMode} ` +
+    `model=${ttsModel}`
   );
 
   const response =
@@ -3903,24 +4124,14 @@ async function generateFergieSpeech(
 
         body:
           JSON.stringify({
-            text: ttsText,
+            text:
+              ttsText,
 
             model_id:
               ttsModel,
 
-            voice_settings: {
-              stability:
-                0.45,
-
-              similarity_boost:
-                0.8,
-
-              style:
-                0.25,
-
-              use_speaker_boost:
-                true,
-            },
+            voice_settings:
+              voiceSettings,
           }),
       }
     );
