@@ -207,6 +207,48 @@ const commands = [
   new SlashCommandBuilder()
     .setName("djstop")
     .setDescription("Stop DJ Fergie and clear the queue"),
+  
+  new SlashCommandBuilder()
+    .setName("seasonvoicetest")
+    .setDescription("Test Fergie's seasonal VC voice")
+    .addStringOption((option) =>
+      option
+        .setName("mode")
+        .setDescription("Voice mode to force")
+        .setRequired(true)
+        .addChoices(
+          {
+            name: "Normal",
+            value: "normal",
+          },
+          {
+            name: "Whisper",
+            value: "whisper",
+          },
+          {
+            name: "Scared",
+            value: "scared",
+          },
+          {
+            name: "Hollow",
+            value: "hollow",
+          },
+          {
+            name: "Possessed",
+            value: "possessed",
+          },
+          {
+            name: "Unstable",
+            value: "unstable",
+          }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("text")
+        .setDescription("What Fergie should say")
+        .setRequired(false)
+    ),
 ].map((command) => command.toJSON());
 
 client.once("ready", async () => {
@@ -340,6 +382,179 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
+  // =========================
+  // /seasonvoicetest
+  // Hidden-ish controlled seasonal ElevenLabs VC test.
+  // Does not modify seasonal story state.
+  // =========================
+  if (
+    interaction.commandName ===
+    "seasonvoicetest"
+  ) {
+    const allowedTesterId =
+      "939225086341296209";
+
+    if (
+      String(interaction.user.id) !==
+      allowedTesterId
+    ) {
+      await interaction.reply({
+        content:
+          "You can't use this test command.",
+        ephemeral: true,
+      });
+
+      return;
+    }
+
+    const connection =
+      getVoiceConnection(
+        interaction.guild.id
+      );
+
+    if (!connection) {
+      await interaction.reply({
+        content:
+          "Fergie needs to be in VC first. Use /join.",
+        ephemeral: true,
+      });
+
+      return;
+    }
+
+    const mode =
+      String(
+        interaction.options.getString(
+          "mode",
+          true
+        ) || "normal"
+      )
+        .trim()
+        .toLowerCase();
+
+    const defaultLines = {
+      normal:
+        "testing one two three. Fergie is normal.",
+
+      whisper:
+        "don't look behind you.",
+
+      scared:
+        "mom... can you hear me?",
+
+      hollow:
+        "everything is fine.",
+
+      possessed:
+        "you should not have opened that.",
+
+      unstable:
+        "I said I'm fine. Stop asking me.",
+    };
+
+    const requestedText =
+      interaction.options.getString(
+        "text",
+        false
+      );
+
+    const testText =
+      String(
+        requestedText ||
+        defaultLines[mode] ||
+        "testing seasonal voice."
+      ).trim();
+
+    await interaction.deferReply({
+      ephemeral: true,
+    });
+
+    let speechFile = null;
+
+    try {
+      console.log(
+        `SEASON VOICE TEST START 🧪 ` +
+        `user=${interaction.user.id} ` +
+        `mode=${mode}`
+      );
+
+      speechFile =
+        await generateFergieSpeech(
+          testText,
+          interaction.user.id,
+          mode
+        );
+
+      const activeDjState =
+        djStates.get(
+          interaction.guild.id
+        );
+
+      const djMusicActive =
+        Boolean(
+          activeDjState &&
+          activeDjState.current &&
+          activeDjState.mixer &&
+          !activeDjState.mixer.destroyed
+        );
+
+      if (djMusicActive) {
+        const mixed =
+          await mixFergieSpeechIntoDj(
+            interaction.guild.id,
+            speechFile
+          );
+
+        if (!mixed) {
+          await playSpeechInVC(
+            connection,
+            speechFile
+          );
+        }
+      }
+
+      else {
+        await playSpeechInVC(
+          connection,
+          speechFile
+        );
+      }
+
+      speechFile = null;
+
+      await interaction.editReply(
+        `Season voice test complete: \`${mode}\``
+      );
+
+      console.log(
+        `SEASON VOICE TEST COMPLETE ✅ ` +
+        `mode=${mode}`
+      );
+
+    } catch (error) {
+      if (speechFile) {
+        try {
+          fs.unlinkSync(
+            speechFile
+          );
+        } catch {}
+      }
+
+      console.error(
+        "SEASON VOICE TEST ❌",
+        error
+      );
+
+      try {
+        await interaction.editReply(
+          "Season voice test failed. Check the Node logs."
+        );
+      } catch {}
+    }
+
+    return;
+  }
+  
   // =========================
   // /djsearch - Stage 4 crate search test (no playback)
   // =========================
