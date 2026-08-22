@@ -377,7 +377,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "leave") {
     leaveVoiceForGuild(interaction.guild.id);
 
-    await interaction.reply("Left VC.");
+    await interaction.reply("ugh fine. i'm leaving.");
 
     return;
   }
